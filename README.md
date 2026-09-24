@@ -1,8 +1,14 @@
 # Conform Export
 
+[![Tests](https://github.com/dimmmmmmmer/conform-export/actions/workflows/tests.yml/badge.svg)](https://github.com/dimmmmmmmer/conform-export/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/release/dimmmmmmmer/conform-export)](https://github.com/dimmmmmmmer/conform-export/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![DaVinci Resolve 21](https://img.shields.io/badge/DaVinci%20Resolve-21-orange)
+![Python 3.9–3.12](https://img.shields.io/badge/python-3.9%E2%80%933.12-3776AB)
+
 A DaVinci Resolve script for the hand-off after grading. You render the timeline as individual clips, and Conform Export writes a timeline that points at those renders, with every clip named after its render file.
 
-You get **FCP7 XML**, **DRT** and a **CSV** list of names. It replaces the XML from Resolve's *Premiere XML* render preset, which often gets names, trims and speed ramps wrong and cannot write a DRT at all.
+You get **FCP7 XML** and **DRT**, plus an optional **CSV** list of names. It replaces the XML from Resolve's *Premiere XML* render preset, which often gets names, trims and speed ramps wrong and cannot write a DRT at all.
 
 ## What it does
 
@@ -16,7 +22,7 @@ You get **FCP7 XML**, **DRT** and a **CSV** list of names. It replaces the XML f
 ## Install
 
 1. Install **Python 3.12** from [python.org](https://www.python.org/downloads/). Resolve needs a 64-bit Python 3.9–3.12. On Apple Silicon the Intel-only Homebrew Python will not work.
-2. [Download this repository](https://github.com/dimmmmmmmer/conform-export/archive/refs/heads/main.zip) and unzip it.
+2. Download **[conform-export.zip](https://github.com/dimmmmmmmer/conform-export/releases/latest/download/conform-export.zip)** from the latest release and unzip it.
 3. Run the installer:
    - **macOS:** double-click `Install.command`. If macOS blocks it, right-click it and choose *Open*.
    - **Windows:** double-click `Install.cmd`.
@@ -44,7 +50,7 @@ On macOS, Resolve looks for Python 3 only in `$PYTHON3HOME` or in `/usr/local/bi
    - **Renders:** the folder with the rendered clips. This is optional.
 3. Click **Refresh / Preview** to check the names, then **Export**.
 
-Files go straight into the output folder: `<timeline>.xml`, `<timeline>.drt`, `<timeline>.csv`, plus `<timeline>_warnings.txt` when there is something to review. Existing files are never overwritten; a new export gets `_2`, `_3`…
+Files go straight into the output folder: `<timeline>.xml`, `<timeline>.drt`, optionally `<timeline>.csv`, plus `<timeline>_warnings.txt` when there is something to review. Existing files are never overwritten; a new export gets `_2`, `_3`…
 
 **Transforms.** Renders of individual clips from Resolve carry zoom, position and flips baked in, but not speed changes. Once a timeline has been rendered, Resolve itself leaves the transforms of the rendered clips out of its XML. If you export from a timeline that still references the camera originals, turn on **Bypass → Transforms** so the zoom is not applied twice.
 
@@ -74,6 +80,8 @@ python3 -m conform timeline.xml --renders /path/to/renders --output out   # conf
 ```
 
 The tests compare the output with a conform that Resolve made itself of the same renders. See `tests/fixtures`; project paths in the fixtures have been anonymised.
+
+Changes are listed in the [changelog](CHANGELOG.md). Bug reports are welcome; please attach the export's `_warnings.txt`.
 
 ## License
 

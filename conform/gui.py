@@ -50,7 +50,7 @@ def launch(resolve, fusion, bmd):
             ui.HGroup({'Weight': 0, 'Spacing': 12}, [
                 ui.CheckBox({'ID': 'DRT', 'Text': 'DRT', 'Checked': True, 'Weight': 0}),
                 ui.CheckBox({'ID': 'XML', 'Text': 'FCP7 XML', 'Checked': True, 'Weight': 0}),
-                ui.CheckBox({'ID': 'CSV', 'Text': 'CSV', 'Checked': True, 'Weight': 0}),
+                ui.CheckBox({'ID': 'CSV', 'Text': 'CSV', 'Checked': False, 'Weight': 0}),
                 ui.HGap(0, 1),
                 ui.Button({'ID': 'Preview', 'Text': 'Refresh / Preview', 'Weight': 0}),
                 ui.Button({'ID': 'Export', 'Text': 'Export', 'Weight': 0})]),
