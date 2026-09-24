@@ -146,7 +146,10 @@ def flips(timeline, items):
               if any(fcp7._effect(f) == 'Basic Motion' for f in i.node.all('filter'))}
     count = 0
     for key, item in video_items(timeline).items():
-        props = item.GetProperty() or {}
+        try:
+            props = item.GetProperty() or {}
+        except Exception:  # older Resolve versions: no Inspector properties in the API
+            return 0
         count += key in moving and bool(props.get('FlipX') or props.get('FlipY'))
     return count
 

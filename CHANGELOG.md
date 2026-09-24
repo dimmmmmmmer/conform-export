@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Keeps working on Resolve versions whose API has no Inspector properties: the flip warning is skipped instead of stopping the export.
+
 ## 1.0.0
 
 First public release.

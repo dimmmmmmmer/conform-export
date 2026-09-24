@@ -3,7 +3,7 @@
 [![Tests](https://github.com/dimmmmmmmer/conform-export/actions/workflows/tests.yml/badge.svg)](https://github.com/dimmmmmmmer/conform-export/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/dimmmmmmmer/conform-export)](https://github.com/dimmmmmmmer/conform-export/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![DaVinci Resolve 21](https://img.shields.io/badge/DaVinci%20Resolve-21-orange)
+![Tested on DaVinci Resolve 21](https://img.shields.io/badge/tested%20on-DaVinci%20Resolve%2021-orange)
 ![Python 3.9–3.12](https://img.shields.io/badge/python-3.9%E2%80%933.12-3776AB)
 
 A DaVinci Resolve script for the hand-off after grading. You render the timeline as individual clips, and Conform Export writes a timeline that points at those renders, with every clip named after its render file.
@@ -61,7 +61,7 @@ Files go straight into the output folder: `<timeline>.xml`, `<timeline>.drt`, op
 - **Speed ramps:** Resolve's own XML gets them wrong, so a ramp is exported as a constant average speed with exact start and end frames. The export lists every such clip in its warnings.
 - **Flips:** FCP7 XML cannot carry Inspector flips. You get a warning when a flipped clip's transforms are not baked into its render.
 - **Timelines that are not 16:9:** Resolve's XML shifts vertical position. The DRT corrects for this; the XML is left as Resolve writes it.
-- **Platforms:** tested with DaVinci Resolve Studio 21 on macOS. Windows and Linux are covered by tests only.
+- **Versions and platforms:** tested with DaVinci Resolve Studio 21 on macOS. The scripting calls it uses have been in Resolve for several major versions, so older releases will probably work, but they are untested. Exact speed-ramp positions need a newer API; where that call is missing, ramps are left offline with a warning. Windows and Linux are covered by automated tests only. Reports from other setups are welcome.
 
 ## Uninstall
 
