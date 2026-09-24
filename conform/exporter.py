@@ -34,7 +34,7 @@ def source_ranges(timeline, items):
     """Resolve's own source positions as absolute timecode frames (exported speed
     ramps cannot be trusted). Absolute, because the XML Resolve exports may
     already point at renders while these positions count from the source."""
-    start, found = timeline.GetStartFrame(), {}
+    found = {}
     for key, item in video_items(timeline).items():
         try:
             clip = item.GetMediaPoolItem()
