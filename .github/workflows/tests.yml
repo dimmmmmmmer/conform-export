@@ -27,6 +27,6 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Compile
-        run: python -m compileall -q conform installer.py launch_resolve.py "Conform Export.py"
+        run: python -m compileall -q conform installer.py "Conform Export.py"
       - name: Unit tests
         run: python -m unittest discover -s tests -v

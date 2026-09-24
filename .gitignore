@@ -4,7 +4,4 @@ exports/
 .ce-*/
 .ce-*/
 .DS_Store
-runtime.json
 startup.log
-resolve-launch.log
-launch-status.json

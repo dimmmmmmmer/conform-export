@@ -3,7 +3,7 @@
 [![Tests](https://github.com/dimmmmmmmer/conform-export/actions/workflows/tests.yml/badge.svg)](https://github.com/dimmmmmmmer/conform-export/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/dimmmmmmmer/conform-export)](https://github.com/dimmmmmmmer/conform-export/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Tested on DaVinci Resolve 21](https://img.shields.io/badge/tested%20on-DaVinci%20Resolve%2021-orange)
+![DaVinci Resolve 19+](https://img.shields.io/badge/DaVinci%20Resolve-19%2B-orange)
 ![Python 3.9–3.12](https://img.shields.io/badge/python-3.9%E2%80%933.12-3776AB)
 
 A DaVinci Resolve script for the hand-off after grading. You render the timeline as individual clips, and Conform Export writes a timeline that points at those renders, with every clip named after its render file.
@@ -23,13 +23,15 @@ You get **FCP7 XML** and **DRT**, plus an optional **CSV** list of names. It rep
 
 ## Install
 
+Works with **DaVinci Resolve 19 and later**.
+
 1. Install **Python 3.12** from [python.org](https://www.python.org/downloads/). Resolve needs a 64-bit Python 3.9–3.12. On Apple Silicon the Intel-only Homebrew Python will not work.
 2. Download **[conform-export.zip](https://github.com/dimmmmmmmer/conform-export/releases/latest/download/conform-export.zip)** from the latest release and unzip it.
 3. Run the installer:
    - **macOS:** double-click `Install.command`. If macOS blocks it, right-click it and choose *Open*.
    - **Windows:** double-click `Install.cmd`.
    - **Linux:** `bash Install.sh`
-4. Quit Resolve completely and open it again. On Windows and Linux, start it with `Start Resolve` from the install folder the installer prints.
+4. Quit Resolve completely and open it again.
 5. Open **Workspace → Scripts → Conform Export**.
 
 No admin rights are needed. The installer copies everything into your user's Resolve folder, so the downloaded folder can be deleted afterwards.
@@ -38,6 +40,8 @@ No admin rights are needed. The installer copies everything into your user's Res
 <summary>Why the installer sets <code>PYTHON3HOME</code> on macOS</summary>
 
 On macOS, Resolve looks for Python 3 only in `$PYTHON3HOME` or in `/usr/local/bin/python3`. If that is missing or has the wrong architecture, Resolve silently hides every Python script from the menu. The installer picks a Python that Resolve can load and sets `PYTHON3HOME` for apps opened from the Dock, now and at every login, through a LaunchAgent. Python itself ignores this variable, so your other tools are not affected.
+
+On Windows and Linux, Resolve finds a normally installed Python by itself. If the script does not show up in the menu, set the `PYTHON3HOME` environment variable to your Python folder and restart Resolve.
 
 </details>
 
@@ -61,7 +65,7 @@ Files go straight into the output folder: `<timeline>.xml`, `<timeline>.drt`, op
 - **Speed ramps:** Resolve's own XML gets them wrong, so a ramp is exported as a constant average speed with exact start and end frames. The export lists every such clip in its warnings.
 - **Flips:** FCP7 XML cannot carry Inspector flips. You get a warning when a flipped clip's transforms are not baked into its render.
 - **Timelines that are not 16:9:** Resolve's XML shifts vertical position. The DRT corrects for this; the XML is left as Resolve writes it.
-- **Versions and platforms:** tested with DaVinci Resolve Studio 21 on macOS. The scripting calls it uses have been in Resolve for several major versions, so older releases will probably work, but they are untested. Exact speed-ramp positions need a newer API; where that call is missing, ramps are left offline with a warning. Windows and Linux are covered by automated tests only. Reports from other setups are welcome.
+- **Versions and platforms:** needs DaVinci Resolve 19 or later; tested with Resolve Studio 21 on macOS. Windows and Linux are covered by automated tests only. Reports from other setups are welcome.
 
 ## Uninstall
 

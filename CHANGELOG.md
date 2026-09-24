@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Removed the `Start Resolve` helpers; Resolve is simply restarted after installing.
+- Documented the requirement: DaVinci Resolve 19 or later.
+
 ## 1.0.1
 
 - Keeps working on Resolve versions whose API has no Inspector properties: the flip warning is skipped instead of stopping the export.

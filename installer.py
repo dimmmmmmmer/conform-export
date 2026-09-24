@@ -119,7 +119,7 @@ def configure_macos_python(python_home, home=None, run=subprocess.run):
     return path
 
 
-def install(source, payload, menu, runtime, resolve_path=None):
+def install(source, payload, menu):
     source, payload, menu = map(Path, (source, payload, menu))
     if payload.resolve() == source.resolve():
         raise RuntimeError('Installation destination must differ from source')
@@ -136,10 +136,7 @@ def install(source, payload, menu, runtime, resolve_path=None):
     published = False
     try:
         shutil.copytree(source / 'conform', stage / 'conform', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-        for filename in (ENTRY, 'launch_resolve.py', 'Start Resolve.cmd', 'Start Resolve.sh'):
-            shutil.copy2(source / filename, stage / filename)
-        config = dict(runtime, resolve_path=resolve_path)
-        (stage / 'runtime.json').write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
+        shutil.copy2(source / ENTRY, stage / ENTRY)
         (stage / INSTALLED).write_text(json.dumps(dict(version=2, source=str(source))), encoding='utf-8')
         if payload.exists():
             backup = payload.with_name(payload.name + '.backup-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
@@ -183,7 +180,6 @@ def remove_legacy(payload, menu):
 def main(argv=None):
     p = argparse.ArgumentParser(description='Install Conform Export for the current user. No admin rights required.')
     p.add_argument('--target', type=Path, help='Custom installation root (for testing/portable deployment)')
-    p.add_argument('--resolve', help='Custom Resolve executable location')
     p.add_argument('--check', action='store_true', help='Check runtime and paths without installing')
     args = p.parse_args(argv)
     source = Path(__file__).resolve().parent
@@ -200,7 +196,7 @@ def main(argv=None):
         print('PYTHON3HOME for apps: ' + (current or '(not set)'))
     if args.check:
         return
-    destination = install(source, payload, menu, runtime, args.resolve)
+    destination = install(source, payload, menu)
     for old in remove_legacy(payload, menu):
         print('Removed old version: ' + str(old))
     print('\nInstalled: ' + str(destination))
@@ -211,8 +207,7 @@ def main(argv=None):
         if current != runtime['home']:
             print('Quit Resolve completely (Cmd+Q) and open it normally from the Dock or Finder.')
     else:
-        print('Save your work and close Resolve. Then run Start Resolve from: ' + str(payload))
-        print('This starts Resolve with the selected Python, without changing system settings.')
+        print('Quit Resolve completely and open it again.')
     print('In Resolve: Workspace > Scripts > Conform Export')
     print('The installed copy is self-contained; you can move/delete the downloaded folder.')
 

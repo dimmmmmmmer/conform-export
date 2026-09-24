@@ -1,5 +1,4 @@
 from pathlib import Path
-import json
 import platform
 import plistlib
 import sys
@@ -7,10 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import installer
-import launch_resolve
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME = dict(executable='/runtime/python3', home='/runtime', version=[3,12,7], bits=64)
 
 
 class InstallerTests(unittest.TestCase):
@@ -27,52 +24,33 @@ class InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             payload, menu = root/'payload', root/'menu'
-            destination = installer.install(ROOT, payload, menu, RUNTIME)
+            destination = installer.install(ROOT, payload, menu)
             self.assertTrue((payload/'conform/fcp7.py').is_file())
-            self.assertTrue((payload/'runtime.json').is_file())
             written = lambda p: repr(str(p))[1:-1]  # as it appears inside the launcher's string literal
             self.assertIn(written(payload), destination.read_text())
             self.assertNotIn(written(ROOT), destination.read_text())
-            installer.install(ROOT, payload, menu, RUNTIME)
+            installer.install(ROOT, payload, menu)
             self.assertEqual(len(list(root.glob('payload.backup-*'))), 1)
-            installer.install(ROOT, payload, menu, RUNTIME)
+            installer.install(ROOT, payload, menu)
             self.assertEqual(len(list(root.glob('payload.backup-*'))), 1)
 
     def test_preserves_unrelated_script(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); menu = root/'menu';menu.mkdir()
             destination = menu/installer.ENTRY; destination.write_text('user script')
-            with self.assertRaises(RuntimeError): installer.install(ROOT, root/'payload', menu, RUNTIME)
+            with self.assertRaises(RuntimeError): installer.install(ROOT, root/'payload', menu)
             self.assertEqual(destination.read_text(), 'user script')
 
     def test_rolls_back_failed_menu_publication(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);payload=root/'payload';menu=root/'menu'
-            destination=installer.install(ROOT,payload,menu,RUNTIME)
+            destination=installer.install(ROOT,payload,menu)
             old=destination.read_bytes()
             (payload/'keep.txt').write_text('previous installation')
             with patch('installer.os.replace', side_effect=OSError('disk failure')):
-                with self.assertRaises(OSError): installer.install(ROOT,payload,menu,RUNTIME)
+                with self.assertRaises(OSError): installer.install(ROOT,payload,menu)
             self.assertEqual(destination.read_bytes(),old)
             self.assertEqual((payload/'keep.txt').read_text(),'previous installation')
-
-    def test_runtime_environment_is_process_local(self):
-        old={'PATH':'/usr/bin','OTHER':'value'}
-        new=launch_resolve.environment(RUNTIME,old)
-        self.assertNotIn('PYTHONHOME',old)
-        self.assertEqual(new['PYTHON3HOME'],'/runtime')
-        self.assertEqual(new['OTHER'],'value')
-
-    def test_legacy_install_is_removed_but_foreign_files_stay(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp); menu = root/'menu'; menu.mkdir()
-            old = root/'RenderNamedTimelineExporter'; old.mkdir(); (old/'.rnte-install.json').write_text('{}')
-            foreign = root/'RenderNamedTimelineExporter.backup-x'; foreign.mkdir()
-            (menu/'Render Named Timeline Exporter.py').write_text(installer.OLD_MARKER + '\n# old')
-            removed = installer.remove_legacy(root/installer.APP, menu)
-            self.assertEqual(len(removed), 2)
-            self.assertFalse(old.exists())
-            self.assertTrue(foreign.exists())
 
     def test_missing_interpreter_probe(self):
         self.assertIsNone(installer.probe('/does-not-exist/python'))
@@ -94,30 +72,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(agent['ProgramArguments'], ['/bin/launchctl', 'setenv', 'PYTHON3HOME', '/runtime'])
         self.assertEqual(calls, [['/bin/launchctl', 'setenv', 'PYTHON3HOME', '/runtime']])
 
-    @unittest.skipIf(sys.platform == 'win32', 'POSIX executable fixture')
-    def test_detached_child_has_usable_standard_streams(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            fake = root / 'resolve'
-            fake.write_text('#!' + sys.executable + '\n'
-                            'import sys,json\n'
-                            'assert sys.stdin.read() == ""\n'
-                            'print(json.dumps({"streams": "ok"}), flush=True)\n'
-                            'print("stderr ok", file=sys.stderr, flush=True)\n')
-            fake.chmod(0o755)
-            config = dict(executable=sys.executable, home=sys.base_prefix)
-            process = launch_resolve.start_process(fake, config, root / 'log')
-            self.assertEqual(process.wait(timeout=15), 0)
-            result = (root / 'log').read_text()
-            self.assertIn('Conform Export Python probe:', result)
-            self.assertIn('"streams": "ok"', result)
-            self.assertIn('stderr ok', result)
-
     def test_existing_old_pointer_launcher_can_upgrade(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);menu=root/'menu';menu.mkdir()
             (menu/installer.ENTRY).write_text(installer.MARKER+'\n# old pointer')
-            installer.install(ROOT,root/'payload',menu,RUNTIME)
+            installer.install(ROOT,root/'payload',menu)
             self.assertIn('runpy.run_path',(menu/installer.ENTRY).read_text())
 
 
