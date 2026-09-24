@@ -60,11 +60,17 @@ def read(data, warnings):
                 start, end = int(node.value('start')), int(node.value('end'))
                 if start < 0 or end <= start:
                     raise Unsupported('clip edge is inside a transition')
+                slug = [n.text for n in definition.all('mediaSource')] == ['Slug'] or (
+                    definition.value('name') == 'Slug' and not definition.all('pathurl'))
                 items.append(Item(node, definition, Clip(
                     node.attrs.get('id') or '%d:%d' % (track, start), track, start, end - start,
-                    node.value('name'), definition.value('name'))))
+                    node.value('name'), definition.value('name'), not slug)))
             except ValueError as exc:
                 warnings.append('V%d %s: %s; left unchanged.' % (track, label, exc))
+    offline = sum(not item.clip.media for item in items)
+    if offline:
+        warnings.append('%d clips have no media (Resolve exports them as "Slug") and are not renamed. '
+                        'Link their media in Resolve and export again.' % offline)
     return root, items
 
 
@@ -332,6 +338,8 @@ def conform(data, names, renders=None, bypass=(), warnings=None, sources=None):
         item = by_uid.get(named.clip.uid)
         if item is None or item.clip != named.clip:
             raise Unsupported('Plan belongs to a different XML snapshot')
+        if not named.clip.media:
+            continue
         try:
             timing = Timing(item, sequence_base, (sources or {}).get(named.clip.uid))
             edits += _conform_item(data, item, named, n, timing, renders, bypass, warnings)

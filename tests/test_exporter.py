@@ -90,8 +90,9 @@ class ConformTests(unittest.TestCase):
         files, refs = fcp7._definitions(root)
         for item in items:
             self.assertFalse(item.file.all('pathurl'), item.clip.old_name)
-            self.assertEqual(item.file.value('name'), item.clip.old_name)  # clip and file carry the new name
-            self.assertFalse(item.file.path('media').all('audio'))
+            if item.clip.media:
+                self.assertEqual(item.file.value('name'), item.clip.old_name)  # clip and file carry the new name
+                self.assertFalse(item.file.path('media').all('audio'))
         self.assertEqual(len({i.file.attrs['id'] for i in items}), len(items))
         self.assertTrue(all(node.attrs.get('id') in files for node, _ in refs))
         before, after = rows(SOURCE), rows(result)
@@ -148,10 +149,23 @@ class ConformTests(unittest.TestCase):
                  and (before[k].value('in'), before[k].value('out')) != (after[k].value('in'), after[k].value('out'))]
         self.assertLessEqual(len(moved), 1, moved)
 
+    def test_clips_without_media_keep_their_name_and_number(self):
+        warnings = []
+        clips = fcp7.clips(SOURCE, warnings)
+        self.assertTrue(any('2 clips have no media' in w for w in warnings))
+        names = {n.clip.start: n for n in plan(clips, 'full-mv') if n.clip.track == 1}
+        slug = names[5270]
+        self.assertFalse(slug.clip.media)
+        self.assertEqual(slug.new_name, slug.clip.old_name)       # not renamed to "..._Slug"
+        self.assertEqual(slug.index, names[5238].index + 1)       # still counted
+        result, _ = self.conform(renders=False)
+        self.assertEqual(rows(result)[(1, 5270)].value('name'), slug.clip.old_name)
+
     def test_bypass_removes_baked_effects(self):
         result, warnings = self.conform(bypass=('transforms', 'crop', 'opacity'))
-        for ci in rows(result).values():
-            if ci.value('name').startswith(('V1-', 'V2-')):
+        offline = {(i.clip.track, i.clip.start) for i in self.items if not i.clip.media}
+        for key, ci in rows(result).items():
+            if key not in offline:
                 self.assertFalse({fcp7._effect(f) for f in ci.all('filter')} & {'Basic Motion', 'Crop', 'Opacity'})
                 self.assertTrue(all(c.text == 'normal' for c in ci.all('compositemode')))
 
@@ -197,10 +211,10 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in files), sorted(p.name for p in folder.iterdir()))
         self.assertTrue(any('DRT is built by Resolve' in w for w in warnings))
         with (folder / 'full-mv.csv').open(encoding='utf-8-sig') as handle:
-            self.assertEqual(len(list(csv.DictReader(handle))), 161)
+            self.assertEqual(len(list(csv.DictReader(handle))), 159)  # two clips have no media
         again, _, _ = build_bundle(self.out / 'in.xml', folder, 'full-mv')  # never overwrites
-        self.assertEqual(sorted(p.name for p in again), ['full-mv_2.csv', 'full-mv_2.xml'])
-        self.assertEqual(len(list(folder.iterdir())), 5)
+        self.assertEqual(sorted(p.name for p in again), ['full-mv_2.csv', 'full-mv_2.xml', 'full-mv_2_warnings.txt'])
+        self.assertEqual(len(list(folder.iterdir())), 6)
 
     def test_drt_maker_gets_conformed_xml(self):
         seen = []

@@ -74,8 +74,10 @@ def launch(resolve, fusion, bmd):
             items['Context'].Text = str(exc)
 
     def show(names, warnings, missing=()):
-        lines = ['V%d  @%d  %s → %s%s' % (p.clip.track, p.clip.start, p.clip.old_name, p.new_name,
-                                            '   · no render' if p.clip.uid in missing else '') for p in names]
+        lines = [('V%d  @%d  %s → %s%s' % (p.clip.track, p.clip.start, p.clip.old_name, p.new_name,
+                                             '   · no render' if p.clip.uid in missing else ''))
+                 if p.clip.media else 'V%d  @%d  %s   · no media, not renamed' % (p.clip.track, p.clip.start, p.clip.old_name)
+                 for p in names]
         items['PreviewText'].PlainText = '\n'.join(lines) + ('\n\nWARNINGS\n' + '\n'.join(warnings) if warnings else '')
 
     def perform(fn):

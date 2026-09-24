@@ -90,7 +90,7 @@ def build_bundle(xml_path, output_root, timeline_name, settings=Settings(), expo
             with (staging / (stem + '.csv')).open('w', encoding='utf-8-sig', newline='') as handle:
                 writer = csv.DictWriter(handle, fieldnames=['track', 'index', 'timeline_position_frames', 'duration', 'old_name', 'source', 'new_name'])
                 writer.writeheader()
-                for p in names:
+                for p in (p for p in names if p.clip.media):
                     writer.writerow(dict(track='V%d' % p.clip.track, index=p.index, timeline_position_frames=p.clip.start,
                                          duration=p.clip.duration, old_name=p.clip.old_name, source=p.clip.source,
                                          new_name=p.new_name))
@@ -128,7 +128,7 @@ def preview(resolve, settings, renders=None):
         missing = set()
         if renders:
             folder = fcp7.Renders(renders)
-            missing = {p.clip.uid for p in names if not folder.named(p.new_name)}
+            missing = {p.clip.uid for p in names if p.clip.media and not folder.named(p.new_name)}
         return names, warnings, missing
 
 

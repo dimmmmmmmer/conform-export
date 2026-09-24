@@ -1,5 +1,5 @@
 """Pure naming plan. Future render-job adapters must consume this same plan."""
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from string import Formatter
 import re
 import unicodedata
@@ -15,6 +15,7 @@ class Clip:
     duration: int
     old_name: str
     source: str
+    media: bool = True  # False: no media linked (Resolve exports such clips as "Slug")
 
 
 @dataclass(frozen=True)
@@ -28,9 +29,6 @@ class NamedClip:
     clip: Clip
     index: int
     new_name: str
-
-    def manifest(self):
-        return dict(asdict(self.clip), index=self.index, new_name=self.new_name)
 
 
 # Windows device names are reserved with any extension (CON.mov, nul).
@@ -65,6 +63,11 @@ def plan(clips, timeline, settings=Settings()):
         # Resolve numbers individual-clip renders from 1 on every track.
         index = 1 if clip.track != track else index + 1
         track = clip.track
+        if not clip.media:
+            # Keeps its number so later clips still match Resolve's renders,
+            # but there is no source name to build a new name from.
+            result.append(NamedClip(clip, index, clip.old_name))
+            continue
         values = dict(TRACK='%s%d' % (settings.prefix, clip.track), INDEX=index,
                       SOURCE=clip.source, TIMELINE=timeline, PREFIX=settings.prefix)
         parts = []
