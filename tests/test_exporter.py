@@ -115,7 +115,7 @@ class ConformTests(unittest.TestCase):
         first = ours[(1, 0)]
         self.assertEqual((first.value('in'), first.value('out'), first.value('duration')), ('10', '118', '128'))
         self.assertEqual(first.one('file').value('name'), 'V1-0001_A003C014_260817_R14E.mov')
-        self.assertIn(str(self.out), unquote(first.one('file').value('pathurl')))
+        self.assertTrue(first.one('file').value('pathurl').startswith(self.out.resolve().as_uri() + '/'))
 
     def test_ramps_become_constant_speed_inside_the_render(self):
         result, warnings = self.conform()

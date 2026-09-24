@@ -30,8 +30,9 @@ class InstallerTests(unittest.TestCase):
             destination = installer.install(ROOT, payload, menu, RUNTIME)
             self.assertTrue((payload/'conform/fcp7.py').is_file())
             self.assertTrue((payload/'runtime.json').is_file())
-            self.assertIn(str(payload), destination.read_text())
-            self.assertNotIn(str(ROOT), destination.read_text())
+            written = lambda p: repr(str(p))[1:-1]  # as it appears inside the launcher's string literal
+            self.assertIn(written(payload), destination.read_text())
+            self.assertNotIn(written(ROOT), destination.read_text())
             installer.install(ROOT, payload, menu, RUNTIME)
             self.assertEqual(len(list(root.glob('payload.backup-*'))), 1)
             installer.install(ROOT, payload, menu, RUNTIME)
