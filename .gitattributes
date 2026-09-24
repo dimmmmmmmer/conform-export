@@ -4,9 +4,11 @@
 *.sh text eol=lf
 *.py text eol=lf
 tests/fixtures/** -text
+*.png binary
 
 # Not needed in the download
 tests/ export-ignore
+docs/ export-ignore
 .github/ export-ignore
 .gitattributes export-ignore
 .gitignore export-ignore

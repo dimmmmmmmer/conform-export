@@ -10,6 +10,8 @@ A DaVinci Resolve script for the hand-off after grading. You render the timeline
 
 You get **FCP7 XML** and **DRT**, plus an optional **CSV** list of names. It replaces the XML from Resolve's *Premiere XML* render preset, which often gets names, trims and speed ramps wrong and cannot write a DRT at all.
 
+<p align="center"><img src="docs/screenshot.png" alt="Conform Export window inside DaVinci Resolve" width="760"></p>
+
 ## What it does
 
 - **Names clips like Resolve names individual-clip renders:** `V1-0001_A003C014.mov`, numbered from 1 on every track.
