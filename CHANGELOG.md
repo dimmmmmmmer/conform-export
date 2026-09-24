@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Removed the `Start Resolve` helpers; Resolve is simply restarted after installing.
-- Documented the requirement: DaVinci Resolve 19 or later.
+- Documented the requirement: DaVinci Resolve Studio 19 or later (the free version has no script windows since 19.1 and no Python scripting since 21.1).
 
 ## 1.0.1
 
