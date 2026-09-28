@@ -171,7 +171,38 @@ class ConformTests(unittest.TestCase):
         self.assertTrue(folder.named('V1-0003_c.mov'))          # any container
         self.assertFalse(folder.named('notes.mov'))              # text files are never renders
         self.assertTrue(folder.has(named('x', 'd.mov')))         # numbered differently: found by source name
-        self.assertFalse(folder.has(named('y', 'e.mov')))
+        other = plan([Clip('z', 3, 0, 1, 'e.mov', 'e.mov')], 't')[0]
+        self.assertFalse(folder.has(other))                       # V3-0001: nothing with that number
+
+    def test_stills_find_their_one_frame_render(self):
+        # Resolve renders a still as a one-frame "sequence" and rewrites the source
+        # part of the name; the clip number still identifies it.
+        for name in ('V2-0008_0.mov', 'V2-0009_title.00000000.mov', 'V2-0001_badge 00+.mov'):
+            (self.out / name).touch()
+        folder = fcp7.Renders(self.out)
+        by_number = lambda track, index, src: [Path(p).name for p in folder.named(
+            *(lambda n: (n.new_name, n.key))(plan([Clip(str(i), track, i, 1, src, src) for i in range(index)], 't')[-1]))]
+        self.assertEqual(by_number(2, 8, '1.png'), ['V2-0008_0.mov'])
+        self.assertEqual(by_number(2, 9, 'title.png'), ['V2-0009_title.00000000.mov'])
+        self.assertEqual(by_number(2, 1, 'badge 18+.png'), ['V2-0001_badge 00+.mov'])
+
+    def test_still_links_to_its_render_and_keeps_holding_the_frame(self):
+        xml = (b'<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media><video><track>'
+               b'<clipitem id="s"><name>1.png</name><duration>1500001</duration><start>0</start><end>125</end><in>90000</in><out>90125</out>'
+               b'<file id="fs"><name>1.png</name><pathurl>file:///src/1.png</pathurl><duration>1</duration><rate><timebase>25</timebase></rate>'
+               b'<timecode><string>00:00:00:00</string><rate><timebase>25</timebase></rate></timecode></file>'
+               b'<filter><start>-1</start><end>-1</end><effect><name>Time Remap</name><parameter><parameterid>speed</parameterid><value>0</value></parameter></effect></filter>'
+               b'</clipitem></track></video></media></sequence></xmeml>')
+        (self.out / 'V1-0001_0.mov').touch()
+        render = media.MediaInfo(str(self.out / 'V1-0001_0.mov'), 1, Fraction(25), 3840, 2160, 0)
+        warnings = []
+        with patch('conform.fcp7.probe', return_value=render):
+            result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), fcp7.Renders(self.out), (), warnings)
+        clip = rows(result)[(1, 0)]
+        self.assertEqual(clip.one('file').value('name'), 'V1-0001_0.mov')
+        self.assertEqual((clip.value('in'), clip.value('out')), ('90000', '90125'))
+        self.assertEqual([fcp7._effect(f) for f in clip.all('filter')], ['Time Remap'])
+        self.assertFalse(warnings)
 
     def test_clips_next_to_a_transition_are_conformed(self):
         xml = (b'<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media><video><track>'

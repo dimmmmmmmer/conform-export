@@ -29,6 +29,7 @@ class NamedClip:
     clip: Clip
     index: int
     new_name: str
+    key: str = ''  # the name up to {SOURCE}, e.g. "V2-0008_": unique, and what Resolve keeps intact
 
 
 # Windows device names are reserved with any extension (CON.mov, nul).
@@ -70,9 +71,11 @@ def plan(clips, timeline, settings=Settings()):
             continue
         values = dict(TRACK='%s%d' % (settings.prefix, clip.track), INDEX=index,
                       SOURCE=clip.source, TIMELINE=timeline, PREFIX=settings.prefix)
-        parts = []
+        parts, key = [], None
         for literal, field, spec, _ in parsed:
             parts.append(literal)
+            if field == 'SOURCE' and key is None:
+                key = ''.join(parts) if any(f == 'INDEX' for _, f, _, _ in parsed[:len(parts)]) else ''
             if field:
                 width = int(spec.rstrip('d')) if spec else 4
                 parts.append('%0*d' % (width, index) if field == 'INDEX' else str(values[field]))
@@ -82,7 +85,7 @@ def plan(clips, timeline, settings=Settings()):
         if name.casefold() in seen or clip.uid in ids:
             raise ValueError('Duplicate output name or clip identity: ' + name)
         seen.add(name.casefold()); ids.add(clip.uid)
-        result.append(NamedClip(clip, index, name))
+        result.append(NamedClip(clip, index, name, key or ''))
     if not result:
         raise ValueError('No supported video clips in timeline')
     return result

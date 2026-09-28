@@ -20,7 +20,8 @@ from .xmlbytes import Unsupported, apply, parse, remove, text, text_edit
 BYPASS = {'transforms': 'Basic Motion', 'crop': 'Crop', 'retime': 'Time Remap', 'opacity': 'Opacity',
           'composite': None}
 # Files in a render folder that are never renders (any other extension may be).
-NOT_RENDERS = ('.xml', '.drt', '.csv', '.txt', '.json', '.edl', '.aaf', '.otio', '.fcpxml', '.log', '.pdf')
+NOT_RENDERS = ('.xml', '.drt', '.csv', '.txt', '.json', '.edl', '.aaf', '.otio', '.fcpxml', '.log', '.pdf',
+               '.wav', '.aif', '.aiff', '.mp3', '.m4a')
 
 
 @dataclass
@@ -154,18 +155,24 @@ class Renders:
                 self.by_stem.setdefault(stem.casefold(), []).append(entry.path)
         self._info = {}
 
-    def named(self, new_name):
+    def named(self, new_name, key=''):
         """Renders called like the new name, whatever their extension; also when
-        the render kept the source's extension (V1-0001_A001.mxf.mov)."""
-        keys = {os.path.splitext(new_name)[0].casefold(), new_name.casefold()}
-        return [p for key in sorted(keys) for p in self.by_stem.get(key, [])]
+        the render kept the source's extension (V1-0001_A001.mxf.mov). Failing
+        that, the ones starting with the clip's number (V2-0008_): Resolve rewrites
+        the source part for stills rendered as sequences (1.png -> V2-0008_0.mov)."""
+        stems = {os.path.splitext(new_name)[0].casefold(), new_name.casefold()}
+        found = [p for stem in sorted(stems) for p in self.by_stem.get(stem, [])]
+        if not found and key:
+            start = key.casefold()
+            found = [p for stem, paths in sorted(self.by_stem.items()) if stem.startswith(start) for p in paths]
+        return found
 
     def containing(self, source):
         suffixes = tuple('_' + s.casefold() for s in {os.path.splitext(source)[0], source})
         return [p for stem, paths in self.by_stem.items() if stem.endswith(suffixes) for p in paths]
 
     def has(self, named):
-        return bool(self.named(named.new_name) or self.containing(named.clip.source))
+        return bool(self.named(named.new_name, named.key) or self.containing(named.clip.source))
 
     def info(self, path):
         if path not in self._info:
@@ -194,7 +201,8 @@ class Timing:
 
     def __init__(self, item, sequence_base, api_range=None):
         node, rate = item.node, item.file.all('rate')
-        self.k = (int(rate[0].value('timebase')) if rate else sequence_base) / sequence_base
+        self.file_base = int(rate[0].value('timebase')) if rate else sequence_base
+        self.k = self.file_base / sequence_base
         self.start = _source_tc(item.file)
         self.first_in, self.first_out = int(node.value('in')), int(node.value('out'))
         self.filter = next((f for f in node.all('filter') if _effect(f) == 'Time Remap'), None)
@@ -325,7 +333,7 @@ def _pick(renders, named, item, timing, warnings):
         return (not isinstance(info, Exception) and info.tc_start is not None and timing.start is not None
                 and info.tc_start <= timing.start + first and timing.start + last <= info.tc_start + info.frames - 1)
 
-    exact = renders.named(named.new_name)
+    exact = renders.named(named.new_name, named.key)
     renders.prefetch(exact)
     good = [p for p in exact if not isinstance(renders.info(p), Exception)]
     for path in exact:
@@ -333,7 +341,7 @@ def _pick(renders, named, item, timing, warnings):
             warnings.append('%s: render %s unreadable (%s).' % (label, Path(path).name, renders.info(path)))
     if len(good) == 1:
         info = renders.info(good[0])
-        if info.tc_start is not None and timing.start is not None and not covers(info):
+        if info.tc_start is not None and timing.start is not None and not timing.freeze and not covers(info):
             warnings.append('%s: render %s does not cover the clip; check handles.' % (label, Path(good[0]).name))
         return info
     if len(good) > 1:
@@ -405,12 +413,17 @@ def _conform_item(data, item, named, n, timing, renders, bypass, warnings):
     edits = [text_edit(node.one('name'), named.new_name)]
     fid = 'conform-%04d' % n
     info = _pick(renders, named, item, t, warnings) if renders else None
-    if info is not None and round(info.rate) != round(t.k * int(node.path('rate', 'timebase').text)):
+    if info is not None and round(info.rate) != t.file_base:
         warnings.append('%s: render frame rate %s differs from the source; left offline.' % (label, info.rate))
         info = None
-    drop_retime = t.filter is not None and 'retime' in bypass
+    drop_retime = t.filter is not None and 'retime' in bypass and not t.freeze
     remap = None       # replacement Time Remap filter, bytes
-    if info is not None:
+    if info is not None and t.freeze:
+        # A still: Resolve renders one frame and the clip keeps holding it.
+        new_in, new_dur = old_in, int(node.value('duration'))
+        ref = node.one('file')
+        edits.append((ref.start, ref.end, _render_file(fid, info, Path(info.path).name)))
+    elif info is not None:
         if drop_retime:
             # Speed is baked into the render: centre the clip in its handles.
             spare = info.frames - length
@@ -425,8 +438,6 @@ def _conform_item(data, item, named, n, timing, renders, bypass, warnings):
                 offset = first - (info.frames - (last - first + 1)) // 2
                 warnings.append('%s: render has no timecode; assumed equal handles.' % label)
             lo, hi = offset / t.k, (offset + info.frames) / t.k     # render span in media time
-            if t.freeze:
-                raise Unsupported('freeze frame')
             if t.filter is not None and not t.reverse and not t.ramp and t.api:
                 # Resolve renders from its exact source position; the exported
                 # graph is rounded, so prefer the position Resolve reports.
@@ -476,7 +487,7 @@ def _conform_item(data, item, named, n, timing, renders, bypass, warnings):
         elif f is t.filter:
             if remap is not None:
                 edits.append((f.start, f.end, remap))
-            elif info is not None and not drop_retime:
+            elif info is not None and not drop_retime and not t.freeze:
                 edits += _move_graph(t, shift, lo, info, new_dur)
         else:
             edits += [text_edit(k.one('when'), _number(float(k.value('when')) - shift)) for k in _keyframes(f) if shift]

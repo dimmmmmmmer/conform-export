@@ -15,7 +15,7 @@ You get **FCP7 XML** and **DRT**, plus an optional **CSV** list of names. It rep
 ## What it does
 
 - **Names clips like Resolve names individual-clip renders:** `V1-0001_A003C014.mov`, numbered from 1 on every track.
-- **Points every clip at its render.** Renders are found by name whatever their file extension, and in and out points are recalculated from the render's timecode, so renders trimmed with handles (for example ±10 frames) line up. Reverse clips, clips next to transitions and mixed frame rates (50p on a 25p timeline) are handled too.
+- **Points every clip at its render.** Renders are found by name whatever their file extension, or by the clip number when Resolve changed the rest of the name (stills are rendered as one-frame clips such as `V2-0008_0.mov`), and in and out points are recalculated from the render's timecode, so renders trimmed with handles (for example ±10 frames) line up. Reverse clips, clips next to transitions and mixed frame rates (50p on a 25p timeline) are handled too.
 - **Leaves clips offline without a render folder.** Paths to the camera originals are removed, so nothing links back to them. The clips keep the new names and can be relinked later.
 - **Bypasses baked-in effects.** Transforms, crop, retime, opacity and composite mode can each be dropped, so they are not applied twice.
 - **Builds the DRT in Resolve itself.** Resolve imports the fixed XML into a temporary bin, exports the DRT, and the bin and timeline are deleted afterwards.
