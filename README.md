@@ -15,9 +15,9 @@ You get **FCP7 XML** and **DRT**, plus an optional **CSV** list of names. It rep
 ## What it does
 
 - **Names clips like Resolve names individual-clip renders:** `V1-0001_A003C014.mov`, numbered from 1 on every track.
-- **Points every clip at its render.** In and out points are recalculated from the render's timecode, so renders trimmed with handles (for example ±10 frames) line up. Reverse clips and mixed frame rates (50p on a 25p timeline) are handled too.
+- **Points every clip at its render.** Renders are found by name whatever their file extension, and in and out points are recalculated from the render's timecode, so renders trimmed with handles (for example ±10 frames) line up. Reverse clips, clips next to transitions and mixed frame rates (50p on a 25p timeline) are handled too.
 - **Leaves clips offline without a render folder.** Paths to the camera originals are removed, so nothing links back to them. The clips keep the new names and can be relinked later.
-- **Bypasses baked-in effects.** Transforms, crop, retime and opacity can each be dropped, so they are not applied twice.
+- **Bypasses baked-in effects.** Transforms, crop, retime, opacity and composite mode can each be dropped, so they are not applied twice.
 - **Builds the DRT in Resolve itself.** Resolve imports the fixed XML into a temporary bin, exports the DRT, and the bin and timeline are deleted afterwards.
 - **Never changes your timeline** and starts no renders.
 
@@ -51,9 +51,9 @@ On Windows and Linux, Resolve finds a normally installed Python by itself. If th
 2. Set the options:
    - **Naming:** the name template. The default `{TRACK}-{INDEX:4}_{SOURCE}` matches Resolve's render names. Available fields are `{TRACK}`, `{INDEX}`, `{SOURCE}`, `{TIMELINE}` and `{PREFIX}`; `{INDEX:4}` means four digits with leading zeros.
    - **Prefix:** the letter before the track number. `V` gives `V1`, `V2`…
-   - **Bypass:** effects already baked into the renders, which should not be applied again.
+   - **Bypass:** effects already baked into the renders, which should not be applied again: transforms (including their animation), crop, retime (speed and retime process), opacity, composite mode.
    - **Output:** where the files are written.
-   - **Renders:** the folder with the rendered clips. This is optional.
+   - **Renders:** the folder with the rendered clips. This is optional. Timecode is read from QuickTime/MP4 renders directly; other containers (MXF and so on) need `ffprobe` installed.
 3. Click **Refresh / Preview** to check the names, then **Export**.
 
 Files go straight into the output folder: `<timeline>.xml`, `<timeline>.drt`, optionally `<timeline>.csv`, plus `<timeline>_warnings.txt` when there is something to review. Existing files are never overwritten; a new export gets `_2`, `_3`…

@@ -4,7 +4,8 @@ import traceback
 from .exporter import active, preview, export_current
 from .naming import Settings, DEFAULT_TEMPLATE
 
-BYPASS = (('transforms', 'Transforms'), ('crop', 'Crop'), ('retime', 'Retime'), ('opacity', 'Opacity'))
+BYPASS = (('transforms', 'Transforms'), ('crop', 'Crop'), ('retime', 'Retime'), ('opacity', 'Opacity'),
+          ('composite', 'Composite'))
 
 
 def launch(resolve, fusion, bmd):
@@ -32,7 +33,7 @@ def launch(resolve, fusion, bmd):
     # collapses a LineEdit, so widths are expressed with weights. The resize
     # limit comes from fixed spacers: macOS will not shrink the window below
     # the layout's minimum; the window opens at that size.
-    width, preview_height = 760, 290
+    width, preview_height = 860, 290
     win = dispatcher.AddWindow({'ID': window_id, 'WindowTitle': 'Conform Export',
                                 'Geometry': [140, 120, width, 470]}, ui.VGroup({'Spacing': 8}, [
         ui.Label({'ID': 'Context', 'Text': '', 'Weight': 0, 'Alignment': {'AlignHCenter': True, 'AlignVCenter': True}}),

@@ -3,6 +3,9 @@
 ## Unreleased
 
 - Removed the `Start Resolve` helpers; Resolve is simply restarted after installing.
+- Renders are matched by name whatever their extension, also when a render kept the source's extension; the preview finds them the same way as the export.
+- Clips next to a transition are conformed instead of being left unchanged.
+- New bypass option: composite mode (previously reset together with opacity).
 - Documented the requirement: DaVinci Resolve Studio 19 or later (the free version has no script windows since 19.1 and no Python scripting since 21.1).
 
 ## 1.0.1

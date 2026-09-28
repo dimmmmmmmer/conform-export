@@ -16,8 +16,11 @@ from .media import MediaError, frames_to_tc, probe, tc_to_frames
 from .naming import Clip
 from .xmlbytes import Unsupported, apply, parse, remove, text, text_edit
 
-BYPASS = {'transforms': 'Basic Motion', 'crop': 'Crop', 'retime': 'Time Remap', 'opacity': 'Opacity'}
-RENDER_EXTENSIONS = ('.mov', '.mp4', '.m4v', '.mxf')
+# Bypass option -> FCP7 filter it removes ('composite' resets <compositemode> instead).
+BYPASS = {'transforms': 'Basic Motion', 'crop': 'Crop', 'retime': 'Time Remap', 'opacity': 'Opacity',
+          'composite': None}
+# Files in a render folder that are never renders (any other extension may be).
+NOT_RENDERS = ('.xml', '.drt', '.csv', '.txt', '.json', '.edl', '.aaf', '.otio', '.fcpxml', '.log', '.pdf')
 
 
 @dataclass
@@ -51,15 +54,24 @@ def read(data, warnings):
     files, _ = _definitions(root)
     items = []
     for track, element in enumerate(root.path('sequence', 'media', 'video').all('track'), 1):
-        for node in element.all('clipitem'):
+        children = [c for c in element.children if c.tag in ('clipitem', 'transitionitem')]
+        for position, node in enumerate(children):
+            if node.tag != 'clipitem':
+                continue
             label = node.all('name')[0].text if node.all('name') else node.attrs.get('id', '?')
             try:
                 definition = files.get(node.one('file').attrs.get('id'))
                 if definition is None:
                     raise Unsupported('file definition missing')
                 start, end = int(node.value('start')), int(node.value('end'))
-                if start < 0 or end <= start:
-                    raise Unsupported('clip edge is inside a transition')
+                # FCP7 writes -1 for an edge that sits in a transition; the cut is
+                # then given by the neighbouring <transitionitem>.
+                if start < 0:
+                    start = _cut(children[position - 1] if position else None)
+                if end < 0:
+                    end = _cut(children[position + 1] if position + 1 < len(children) else None)
+                if start is None or end is None or end <= start:
+                    raise Unsupported('clip edge in a transition could not be placed')
                 slug = [n.text for n in definition.all('mediaSource')] == ['Slug'] or (
                     definition.value('name') == 'Slug' and not definition.all('pathurl'))
                 items.append(Item(node, definition, Clip(
@@ -72,6 +84,19 @@ def read(data, warnings):
         warnings.append('%d clips have no media (Resolve exports them as "Slug") and are not renamed. '
                         'Link their media in Resolve and export again.' % offline)
     return root, items
+
+
+def _cut(transition):
+    """Timeline frame of the cut under a transition, from its alignment."""
+    if transition is None or transition.tag != 'transitionitem':
+        return None
+    first, last = int(transition.value('start')), int(transition.value('end'))
+    alignment = transition.value('alignment').strip() if transition.all('alignment') else 'center'
+    if alignment in ('start', 'start-black'):
+        return first
+    if alignment in ('end', 'end-black'):
+        return last
+    return (first + last) // 2
 
 
 def clips(data, warnings):
@@ -125,16 +150,22 @@ class Renders:
         self.by_stem = {}
         for entry in os.scandir(self.folder):
             stem, ext = os.path.splitext(entry.name)
-            if entry.is_file() and not entry.name.startswith('.') and ext.lower() in RENDER_EXTENSIONS:
+            if entry.is_file() and not entry.name.startswith('.') and ext.lower() not in NOT_RENDERS:
                 self.by_stem.setdefault(stem.casefold(), []).append(entry.path)
         self._info = {}
 
     def named(self, new_name):
-        return self.by_stem.get(os.path.splitext(new_name)[0].casefold(), [])
+        """Renders called like the new name, whatever their extension; also when
+        the render kept the source's extension (V1-0001_A001.mxf.mov)."""
+        keys = {os.path.splitext(new_name)[0].casefold(), new_name.casefold()}
+        return [p for key in sorted(keys) for p in self.by_stem.get(key, [])]
 
     def containing(self, source):
-        suffix = '_' + os.path.splitext(source)[0].casefold()
-        return [p for stem, paths in self.by_stem.items() if stem.endswith(suffix) for p in paths]
+        suffixes = tuple('_' + s.casefold() for s in {os.path.splitext(source)[0], source})
+        return [p for stem, paths in self.by_stem.items() if stem.endswith(suffixes) for p in paths]
+
+    def has(self, named):
+        return bool(self.named(named.new_name) or self.containing(named.clip.source))
 
     def info(self, path):
         if path not in self._info:
@@ -451,7 +482,7 @@ def _conform_item(data, item, named, n, timing, renders, bypass, warnings):
             edits += [text_edit(k.one('when'), _number(float(k.value('when')) - shift)) for k in _keyframes(f) if shift]
             if f.all('end') and f.value('end').strip() != '-1' and new_dur != int(node.value('duration')):
                 edits.append(text_edit(f.one('end'), new_dur))
-    if 'opacity' in bypass:
+    if 'composite' in bypass:
         edits += [text_edit(c, 'normal') for c in node.all('compositemode')]
     return edits
 

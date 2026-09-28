@@ -161,8 +161,42 @@ class ConformTests(unittest.TestCase):
         result, _ = self.conform(renders=False)
         self.assertEqual(rows(result)[(1, 5270)].value('name'), slug.clip.old_name)
 
+    def test_render_names_match_whatever_the_extension(self):
+        for name in ('V1-0001_a.mxf.mov', 'V1-0002_b.MXF', 'V1-0003_c.avi', 'V2-0009_d.mov', 'notes.txt'):
+            (self.out / name).touch()
+        folder = fcp7.Renders(self.out)
+        named = lambda n, src: plan([Clip(n, 1, 0, 1, src, src)], 't')[0]
+        self.assertTrue(folder.named('V1-0001_a.mxf'))          # render kept the source extension
+        self.assertTrue(folder.named('V1-0002_b.mov'))          # other extension, other case
+        self.assertTrue(folder.named('V1-0003_c.mov'))          # any container
+        self.assertFalse(folder.named('notes.mov'))              # text files are never renders
+        self.assertTrue(folder.has(named('x', 'd.mov')))         # numbered differently: found by source name
+        self.assertFalse(folder.has(named('y', 'e.mov')))
+
+    def test_clips_next_to_a_transition_are_conformed(self):
+        xml = (b'<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media><video><track>'
+               b'<clipitem id="a"><name>a.mov</name><duration>100</duration><start>0</start><end>-1</end><in>0</in><out>60</out>'
+               b'<file id="fa"><name>a.mov</name><pathurl>file:///src/a.mov</pathurl><duration>100</duration><rate><timebase>25</timebase></rate></file></clipitem>'
+               b'<transitionitem><start>40</start><end>60</end><alignment>center</alignment></transitionitem>'
+               b'<clipitem id="b"><name>b.mov</name><duration>100</duration><start>-1</start><end>100</end><in>10</in><out>70</out>'
+               b'<file id="fb"><name>b.mov</name><pathurl>file:///src/b.mov</pathurl><duration>100</duration><rate><timebase>25</timebase></rate></file></clipitem>'
+               b'</track></video></media></sequence></xmeml>')
+        warnings = []
+        clips = fcp7.clips(xml, warnings)
+        self.assertEqual([(c.start, c.duration) for c in clips], [(0, 50), (50, 50)])  # cut in the middle
+        self.assertFalse(warnings)
+        result = fcp7.conform(xml, plan(clips, 't'))
+        self.assertNotIn(b'file:///src/', result)
+
+    def test_composite_mode_has_its_own_bypass(self):
+        mode = lambda data: {ci.one('compositemode').text for ci in rows(data).values() if ci.all('compositemode')}
+        blended = SOURCE.replace(b'<compositemode>normal</compositemode>', b'<compositemode>screen</compositemode>')
+        names = plan(fcp7.clips(blended, []), 'full-mv')
+        self.assertEqual(mode(fcp7.conform(blended, names, None, ('opacity',))), {'screen'})
+        self.assertEqual(mode(fcp7.conform(blended, names, None, ('composite',))) - {'screen'}, {'normal'})
+
     def test_bypass_removes_baked_effects(self):
-        result, warnings = self.conform(bypass=('transforms', 'crop', 'opacity'))
+        result, warnings = self.conform(bypass=('transforms', 'crop', 'opacity', 'composite'))
         offline = {(i.clip.track, i.clip.start) for i in self.items if not i.clip.media}
         for key, ci in rows(result).items():
             if key not in offline:

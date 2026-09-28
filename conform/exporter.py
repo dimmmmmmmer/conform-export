@@ -128,7 +128,7 @@ def preview(resolve, settings, renders=None):
         missing = set()
         if renders:
             folder = fcp7.Renders(renders)
-            missing = {p.clip.uid for p in names if p.clip.media and not folder.named(p.new_name)}
+            missing = {p.clip.uid for p in names if p.clip.media and not folder.has(p)}
         return names, warnings, missing
 
 
