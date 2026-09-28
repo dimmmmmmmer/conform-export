@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.0.2
 
+- The window remembers its settings and folders between runs (stored outside the install folder, so updates keep them).
+- New **= Renders** button next to Output: writes the export into the render folder.
 - Removed the `Start Resolve` helpers; Resolve is simply restarted after installing.
 - Renders are matched by name whatever their extension, also when a render kept the source's extension, and otherwise by the clip number (`V2-0008_`), since Resolve rewrites the source part for stills; the preview finds them the same way as the export.
 - Stills link to the one-frame render Resolve makes for them and keep holding that frame, instead of being left offline.

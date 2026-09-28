@@ -1,6 +1,7 @@
 """Native Fusion UIManager frontend; no third-party Python dependencies."""
 from pathlib import Path
 import traceback
+from . import prefs
 from .exporter import active, preview, export_current
 from .naming import Settings, DEFAULT_TEMPLATE
 
@@ -18,6 +19,8 @@ def launch(resolve, fusion, bmd):
     if existing:
         existing.Show(); existing.Raise()
         return
+
+    saved = prefs.load()
 
     def label(text):
         return ui.Label({'Text': text, 'Weight': 0})
@@ -38,20 +41,23 @@ def launch(resolve, fusion, bmd):
                                 'Geometry': [140, 120, width, 470]}, ui.VGroup({'Spacing': 8}, [
         ui.Label({'ID': 'Context', 'Text': '', 'Weight': 0, 'Alignment': {'AlignHCenter': True, 'AlignVCenter': True}}),
         ui.HGroup({'Weight': 0, 'Spacing': 6}, [
-            label('Naming'), ui.LineEdit({'ID': 'Template', 'Text': DEFAULT_TEMPLATE, 'Weight': 7}),
-            ui.HGap(8, 0), label('Prefix'), ui.LineEdit({'ID': 'Prefix', 'Text': 'V', 'Weight': 1}),
+            label('Naming'), ui.LineEdit({'ID': 'Template', 'Text': saved.get('template', DEFAULT_TEMPLATE), 'Weight': 7}),
+            ui.HGap(8, 0), label('Prefix'), ui.LineEdit({'ID': 'Prefix', 'Text': saved.get('prefix', 'V'), 'Weight': 1}),
             ui.HGap(16, 0), label('Bypass'), ui.HGap(4, 0)] + [
-            ui.CheckBox({'ID': 'Bypass_' + key, 'Text': text, 'Checked': False, 'Weight': 0}) for key, text in BYPASS]),
-        ui.HGroup({'Weight': 0, 'Spacing': 6}, folder('Output', 'Folder', str(Path.home() / 'Movies'))
-                  + [ui.HGap(8, 0)] + folder('Renders', 'Renders', '')),
+            ui.CheckBox({'ID': 'Bypass_' + key, 'Text': text, 'Checked': key in saved.get('bypass', []), 'Weight': 0})
+            for key, text in BYPASS]),
+        ui.HGroup({'Weight': 0, 'Spacing': 6}, folder('Output', 'Folder', saved.get('output', str(Path.home() / 'Movies')))
+                  + [ui.Button({'ID': 'SameAsRenders', 'Text': '= Renders', 'Weight': 0,
+                                'StyleSheet': 'QPushButton { min-width: 0px; padding: 1px 8px; }'}),
+                     ui.HGap(8, 0)] + folder('Renders', 'Renders', saved.get('renders', ''))),
         ui.HGroup({'Spacing': 0}, [ui.TextEdit({'ID': 'PreviewText', 'ReadOnly': True, 'PlainText': ''}),
                                    ui.VGap(preview_height, 0)]),
         ui.Label({'ID': 'Status', 'Text': '', 'WordWrap': True, 'Weight': 0}),
         ui.VGroup({'Weight': 0, 'Spacing': 0}, [
             ui.HGroup({'Weight': 0, 'Spacing': 12}, [
-                ui.CheckBox({'ID': 'DRT', 'Text': 'DRT', 'Checked': True, 'Weight': 0}),
-                ui.CheckBox({'ID': 'XML', 'Text': 'FCP7 XML', 'Checked': True, 'Weight': 0}),
-                ui.CheckBox({'ID': 'CSV', 'Text': 'CSV', 'Checked': False, 'Weight': 0}),
+                ui.CheckBox({'ID': 'DRT', 'Text': 'DRT', 'Checked': saved.get('drt', True), 'Weight': 0}),
+                ui.CheckBox({'ID': 'XML', 'Text': 'FCP7 XML', 'Checked': saved.get('xml', True), 'Weight': 0}),
+                ui.CheckBox({'ID': 'CSV', 'Text': 'CSV', 'Checked': saved.get('csv', False), 'Weight': 0}),
                 ui.HGap(0, 1),
                 ui.Button({'ID': 'Preview', 'Text': 'Refresh / Preview', 'Weight': 0}),
                 ui.Button({'ID': 'Export', 'Text': 'Export', 'Weight': 0})]),
@@ -108,6 +114,7 @@ def launch(resolve, fusion, bmd):
                 renders(), bypass())
             show(names, warnings)
             items['Status'].Text = 'Saved %d clips, %d warnings: %s' % (len(names), len(warnings), ', '.join(p.name for p in dest))
+            remember()
         perform(work)
 
     def browse(field):
@@ -120,10 +127,26 @@ def launch(resolve, fusion, bmd):
     def dirty(event):
         items['Status'].Text = 'Settings changed. Refresh preview before exporting.'
 
-    win.On[window_id].Close = lambda ev: dispatcher.ExitLoop()
+    def remember():
+        prefs.save(dict(template=items['Template'].Text, prefix=items['Prefix'].Text, bypass=bypass(),
+                        output=items['Folder'].Text, renders=items['Renders'].Text,
+                        drt=bool(items['DRT'].Checked), xml=bool(items['XML'].Checked), csv=bool(items['CSV'].Checked)))
+
+    def close(event):
+        remember()
+        dispatcher.ExitLoop()
+
+    win.On[window_id].Close = close
     win.On['Preview'].Clicked = refresh
     win.On['Export'].Clicked = export
+    def same_as_renders(event):
+        if renders():
+            items['Folder'].Text = renders()
+        else:
+            items['Status'].Text = 'Choose a Renders folder first.'
+
     win.On['FolderBrowse'].Clicked = browse('Folder')
+    win.On['SameAsRenders'].Clicked = same_as_renders
     win.On['RendersBrowse'].Clicked = browse('Renders')
     for id_ in ('Template', 'Prefix', 'Renders'):
         win.On[id_].TextChanged = dirty

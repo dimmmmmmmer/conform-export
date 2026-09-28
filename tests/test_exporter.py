@@ -295,6 +295,19 @@ class BundleTests(unittest.TestCase):
             build_bundle(self.out / 'in.xml', self.out, 't', export_drt=False, export_xml=False, export_csv=False)
 
 
+class PrefsTests(unittest.TestCase):
+    def test_settings_round_trip_and_bad_files(self):
+        from conform import prefs
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / 'Conform Export' / 'settings.json'
+            with patch('conform.prefs.path', return_value=target):
+                self.assertEqual(prefs.load(), {})
+                prefs.save({'output': '/x', 'bypass': ['crop']})
+                self.assertEqual(prefs.load(), {'output': '/x', 'bypass': ['crop']})
+                target.write_text('not json')
+                self.assertEqual(prefs.load(), {})
+
+
 class NamingTests(unittest.TestCase):
     def test_numbering_restarts_per_track_and_prefix_names_the_track(self):
         clips = [Clip('b', 2, 10, 20, 'x.mov', 'x.mov'), Clip('a', 1, 10, 20, 'x.mov', 'x.mov'), Clip('c', 1, 30, 20, 'y.mov', 'y.mov')]
