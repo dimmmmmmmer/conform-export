@@ -1,6 +1,7 @@
 import csv
 import json
 from fractions import Fraction
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -263,6 +264,54 @@ class ConformTests(unittest.TestCase):
         self.assertEqual(linked[(1, 50)], 'V1-0002_a.mov')
         self.assertIn('V1-0002_a.mov: render V1-0002_a.mov does not cover the clip; check handles.', warnings)
 
+    def test_several_render_folders(self):
+        # The renders, and trims re-rendered later into a second folder; b was rendered into both.
+        main, trims = self.out / 'renders', self.out / 'trims'
+        main.mkdir(); trims.mkdir()
+        xml = sequence([clipitem('x', 'a.mov', 0, 1000, 10), clipitem('y', 'b.mov', 50, 2000, 10),
+                        clipitem('z', 'c.mov', 100, 3000, 10)])
+        files = {main / 'V1-0001_a.mov': 1000, main / 'V1-0002_b.mov': 2000, trims / 'V1-0002_b.mov': 2000,
+                 trims / 'V1-0003_c.mov': 3000}
+        for path in files:
+            path.touch()
+        os.utime(main / 'V1-0002_b.mov', (1, 1))       # the first render; trims holds the newer one
+        table = {str(p): media.MediaInfo(str(p), 100, Fraction(25), 1920, 1080, tc) for p, tc in files.items()}
+        warnings = []
+        with patch('conform.fcp7.probe', side_effect=lambda p: table[p]):
+            folders = fcp7.Renders([main, str(trims), main])   # a folder given twice counts once
+            result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), folders, (), warnings)
+        linked = {k: unquote(ci.one('file').value('pathurl')) for k, ci in rows(result).items()}
+        self.assertTrue(linked[(1, 0)].endswith('/renders/V1-0001_a.mov'))
+        self.assertTrue(linked[(1, 50)].endswith('/trims/V1-0002_b.mov'))
+        self.assertTrue(linked[(1, 100)].endswith('/trims/V1-0003_c.mov'))
+        self.assertEqual(warnings, ['V1-0002_b.mov: rendered into 2 folders; took the newest, trims/V1-0002_b.mov.'])
+
+    def test_render_in_two_folders_counts_once_when_matched_by_timecode(self):
+        # Renumbered as in the test above, and x's render was also re-rendered into trims.
+        main, trims = self.out / 'renders', self.out / 'trims'
+        main.mkdir(); trims.mkdir()
+        xml = sequence([clipitem('b', 'b.mov', 0, 5000, 10), clipitem('x', 'a.mov', 50, 1000, 10),
+                        clipitem('y', 'a.mov', 100, 1000, 500)])
+        files = {main / 'V1-0001_a.mov': 1000, main / 'V1-0002_a.mov': 1490, trims / 'V1-0001_a.mov': 1000}
+        for path in files:
+            path.touch()
+        os.utime(main / 'V1-0001_a.mov', (1, 1))
+        table = {str(p): media.MediaInfo(str(p), 70, Fraction(25), 1920, 1080, tc) for p, tc in files.items()}
+        warnings = []
+        with patch('conform.fcp7.probe', side_effect=lambda p: table[p]):
+            result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), fcp7.Renders([main, trims]), (), warnings)
+        linked = {k: unquote(ci.one('file').value('pathurl')) if ci.one('file').all('pathurl') else None
+                  for k, ci in rows(result).items()}
+        self.assertTrue(linked[(1, 50)].endswith('/trims/V1-0001_a.mov'))
+        self.assertTrue(linked[(1, 100)].endswith('/renders/V1-0002_a.mov'))
+        self.assertIn('V1-0002_a.mov: rendered into 2 folders; took the newest, trims/V1-0001_a.mov.', warnings)
+
+    def test_several_different_renders_covering_a_clip_are_named_as_such(self):
+        xml = sequence([clipitem('x', 'a.mov', 0, 1000, 10)])
+        linked, warnings = self.link(xml, {'V1-0007_a.mov': (1000, 100), 'V1-0008_a.mov': (1000, 100)})
+        self.assertIsNone(linked[(1, 0)])
+        self.assertEqual(warnings, ['V1-0001_a.mov: 2 different renders cover the clip; left offline.'])
+
     def test_render_short_after_a_trim_stays_the_clips_own(self):
         # x was trimmed past its handles after rendering; the V2 layer of the same
         # take covers it, but carries another grade.
@@ -422,6 +471,12 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in files if p.suffix != '.txt'), ['full-mv.csv', 'full-mv.drt'])
         self.assertNotIn(b'<pathurl>file:///Volumes/Media/Project/Sources/A003C014', seen[0][0])
         self.assertEqual(seen[0][1], [])  # offline: nothing to import
+
+    def test_renders_field_holds_several_folders(self):
+        from conform.gui import folders
+        self.assertEqual(folders(' /a/renders ; /a/trims;; '), ['/a/renders', '/a/trims'])
+        self.assertEqual(folders('/a/renders'), ['/a/renders'])
+        self.assertEqual(folders('  '), [])
 
     def test_no_formats_rejected(self):
         with self.assertRaises(ValueError):

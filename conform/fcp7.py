@@ -158,17 +158,25 @@ def _fold(name):
 
 
 class Renders:
-    """Render folder, matched by file name without extension (Resolve swaps the source's)."""
+    """Render folders, matched by file name without extension (Resolve swaps the
+    source's). Several folders hold, say, the renders and later re-rendered trims."""
 
-    def __init__(self, folder):
-        self.folder = Path(folder).expanduser()
-        if not self.folder.is_dir():
-            raise ValueError('Render folder not found: %s' % self.folder)
+    def __init__(self, folders):
+        folders = [folders] if isinstance(folders, (str, os.PathLike)) else folders
+        unique = {}
+        for folder in folders:
+            folder = Path(folder).expanduser()
+            unique.setdefault(os.path.normcase(os.path.realpath(folder)), folder)
+        self.folders = list(unique.values())
+        missing = [str(f) for f in self.folders if not f.is_dir()]
+        if missing:
+            raise ValueError('Render folder not found: %s' % ', '.join(missing))
         self.by_stem = {}
-        for entry in os.scandir(self.folder):
-            stem, ext = os.path.splitext(entry.name)
-            if entry.is_file() and not entry.name.startswith('.') and ext.lower() not in NOT_RENDERS:
-                self.by_stem.setdefault(_fold(stem), []).append(entry.path)
+        for folder in self.folders:
+            for entry in os.scandir(folder):
+                stem, ext = os.path.splitext(entry.name)
+                if entry.is_file() and not entry.name.startswith('.') and ext.lower() not in NOT_RENDERS:
+                    self.by_stem.setdefault(_fold(stem), []).append(entry.path)
         self._info = {}
 
     def named(self, new_name):
@@ -356,23 +364,42 @@ def _pick(renders, named, item, timing, warnings, baked=False):
         return (not isinstance(info, Exception) and info.tc_start is not None and timing.start is not None
                 and info.tc_start <= timing.start + first and timing.start + last <= info.tc_start + info.frames - 1)
 
+    def shown(path):
+        # With several folders the same name can be in each: say which one.
+        return os.path.join(Path(path).parent.name, Path(path).name) if len(renders.folders) > 1 else Path(path).name
+
     def readable(paths):
         renders.prefetch(paths)
         for path in paths:
             if isinstance(renders.info(path), Exception):
-                warnings.append('%s: render %s unreadable (%s).' % (label, Path(path).name, renders.info(path)))
+                warnings.append('%s: render %s unreadable (%s).' % (label, shown(path), renders.info(path)))
         return [p for p in paths if not isinstance(renders.info(p), Exception)]
 
     def by_timecode(paths):
-        """The one render among `paths` that holds every frame the clip shows."""
+        """The render among `paths` that holds every frame the clip shows (one
+        render made into several folders counts once), and how many different
+        renders do."""
         renders.prefetch(paths)
         matches = [p for p in paths if covers(renders.info(p))]
-        return matches[0] if len(matches) == 1 else None
+        found = len({_fold(Path(p).stem) for p in matches})
+        return (one(matches, 'several renders cover the clip') if found == 1 else None), found
+
+    def one(paths, several):
+        """The single render among `paths`. The same render made into several
+        folders (a fix re-rendered next to the first renders) is the newest file."""
+        if len(paths) < 2:
+            return paths[0] if paths else None
+        if len({os.path.dirname(p) for p in paths}) == len(paths):
+            newest = max(paths, key=lambda p: os.stat(p).st_mtime)
+            warnings.append('%s: rendered into %d folders; took the newest, %s.' % (label, len(paths), shown(newest)))
+            return newest
+        warnings.append('%s: %s; left offline.' % (label, several))
+        return None
 
     exact = renders.named(named.new_name)
-    good = readable(exact)
-    if len(good) == 1:
-        info = renders.info(good[0])
+    chosen = one(readable(exact), 'several renders with this name')
+    if chosen:
+        info = renders.info(chosen)
         if info.tc_start is not None and timing.start is not None and not timing.freeze and not covers(info):
             # A render made short by a later trim is still the clip's own (its
             # grade); one that holds none of the clip's frames is another cut of
@@ -382,17 +409,14 @@ def _pick(renders, named, item, timing, warnings, baked=False):
             elsewhere = (info.tc_start + info.frames - 1 < timing.start + first
                          or timing.start + last < info.tc_start)
             trusted = not baked and not (timing.ramp and not timing.api)
-            other = by_timecode([p for p in renders.containing(item.clip.source) if p != good[0]]) \
+            other = by_timecode([p for p in renders.containing(item.clip.source) if p not in exact])[0] \
                 if elsewhere and trusted else None
             if other:
                 warnings.append("%s: render %s holds none of the clip's frames; matched render %s by timecode."
-                                % (label, Path(good[0]).name, Path(other).name))
+                                % (label, Path(chosen).name, Path(other).name))
                 return renders.info(other)
-            warnings.append('%s: render %s does not cover the clip; check handles.' % (label, Path(good[0]).name))
+            warnings.append('%s: render %s does not cover the clip; check handles.' % (label, Path(chosen).name))
         return info
-    if len(good) > 1:
-        warnings.append('%s: several renders with this name; left offline.' % label)
-        return None
     if exact:
         return None
     if timing.freeze:
@@ -405,10 +429,10 @@ def _pick(renders, named, item, timing, warnings, baked=False):
         others = readable(numbered)
         stills = [p for p in others if renders.info(p).frames == 1
                   and _letters(unicodedata.normalize('NFC', Path(p).stem)[len(named.key):]) in source]
-        if len(stills) == 1:
-            return renders.info(stills[0])
+        chosen = one(stills, 'several one-frame renders with this clip number')
+        if chosen:
+            return renders.info(chosen)
         if stills:
-            warnings.append('%s: several one-frame renders with this clip number; left offline.' % label)
             return None
         if others:
             warnings.append('%s: render %s has this clip number but is not this still; left offline.'
@@ -416,13 +440,16 @@ def _pick(renders, named, item, timing, warnings, baked=False):
         if numbered:
             return None
     candidates = renders.containing(item.clip.source)
-    other = by_timecode(candidates)
+    other, found = by_timecode(candidates)
     if other:
         warnings.append('%s: matched render %s by timecode.' % (label, Path(other).name))
         return renders.info(other)
-    unreadable = [Path(p).name for p in candidates if isinstance(renders.info(p), Exception)]
-    warnings.append('%s: no render found%s; left offline.'
-                    % (label, ' (unreadable: %s)' % ', '.join(unreadable) if unreadable else ''))
+    if found > 1:
+        warnings.append('%s: %d different renders cover the clip; left offline.' % (label, found))
+    elif not found:
+        unreadable = [shown(p) for p in candidates if isinstance(renders.info(p), Exception)]
+        warnings.append('%s: no render found%s; left offline.'
+                        % (label, ' (unreadable: %s)' % ', '.join(unreadable) if unreadable else ''))
     return None
 
 

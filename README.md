@@ -52,8 +52,8 @@ On Windows and Linux, Resolve finds a normally installed Python by itself. If th
    - **Naming:** the name template. The default `{TRACK}-{INDEX:4}_{SOURCE}` matches Resolve's render names. Available fields are `{TRACK}`, `{INDEX}`, `{SOURCE}`, `{TIMELINE}` and `{PREFIX}`; `{INDEX:4}` means four digits with leading zeros.
    - **Prefix:** the letter before the track number. `V` gives `V1`, `V2`…
    - **Bypass:** effects already baked into the renders, which should not be applied again: transforms (including their animation), crop, retime (speed and retime process), opacity, composite mode.
-   - **Output:** where the files are written. **= Renders** puts them into the render folder.
-   - **Renders:** the folder with the rendered clips. This is optional. Timecode is read from QuickTime/MP4 renders directly; other containers (MXF and so on) need `ffprobe` installed.
+   - **Output:** where the files are written. **= Renders** puts them into the (first) render folder.
+   - **Renders:** the folder with the rendered clips. This is optional. **+** adds another folder, for example trims rendered later. If a clip was rendered into more than one of them, the newest render is used. Timecode is read from QuickTime/MP4 renders directly; other containers (MXF and so on) need `ffprobe` installed.
 3. Click **Refresh / Preview** to check the names and which clips have no render, then **Export**. The window remembers these settings for next time.
 
 Files go straight into the output folder: `<timeline>.xml`, `<timeline>.drt`, optionally `<timeline>.csv`, plus `<timeline>_warnings.txt` when there is something to review. Existing files are never overwritten; a new export gets `_2`, `_3`…
@@ -82,7 +82,7 @@ The code is plain Python 3.9+ with no dependencies.
 
 ```bash
 python3 -m unittest discover -s tests
-python3 -m conform timeline.xml --renders /path/to/renders --output out   # conform an XML without Resolve
+python3 -m conform timeline.xml --renders /path/to/renders --output out   # conform an XML without Resolve; repeat --renders for several folders
 ```
 
 The tests compare the output with a conform that Resolve made itself of the same renders. See `tests/fixtures`; project paths in the fixtures have been anonymised.

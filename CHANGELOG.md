@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Renders** takes several folders. **+** adds another one, for example trims rendered later into their own folder. If a clip was rendered into more than one of them, the newest render is used, with a warning, also when the clip is matched by timecode. In the command line, repeat `--renders`.
+- When several different renders cover a clip that is matched by timecode, the warning says so instead of "no render found".
 - The preview marks "no render" exactly where the export leaves a clip offline: it runs the export's own render matching, reads the render headers and lists the same warnings (several renders with one name, unreadable files, another frame rate, matches by timecode).
 - Render folders made before the edit changed, where the numbers are off by one, are safer:
   - A clip is no longer linked to another source's render just because the render has its number.

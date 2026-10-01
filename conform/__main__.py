@@ -10,7 +10,8 @@ def main():
     p = argparse.ArgumentParser(description='Conform a Resolve FCP7 XML export offline (DRT needs Resolve).')
     p.add_argument('xml', type=Path, help='FCP7 XML exported from Resolve')
     p.add_argument('--output', type=Path, required=True)
-    p.add_argument('--renders', type=Path, help='Folder with the rendered clips; omit to cut media paths')
+    p.add_argument('--renders', type=Path, action='append',
+                   help='Folder with the rendered clips, repeat for several; omit to cut media paths')
     p.add_argument('--bypass', default='', help='Comma list: ' + ','.join(BYPASS))
     p.add_argument('--timeline', default='timeline')
     p.add_argument('--template', default=DEFAULT_TEMPLATE)

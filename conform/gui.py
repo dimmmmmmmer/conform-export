@@ -7,6 +7,14 @@ from .naming import Settings, DEFAULT_TEMPLATE
 
 BYPASS = (('transforms', 'Transforms'), ('crop', 'Crop'), ('retime', 'Retime'), ('opacity', 'Opacity'),
           ('composite', 'Composite'))
+# Resolve's button style keeps buttons at least ~95 px wide; the style rule
+# shrinks the size hint itself, so the layout gives the room back.
+NARROW = 'QPushButton { min-width: 0px; padding: 1px 8px; }'
+
+
+def folders(text):
+    """The Renders field holds one folder or several, separated by ';'."""
+    return [part.strip() for part in text.split(';') if part.strip()]
 
 
 def launch(resolve, fusion, bmd):
@@ -25,12 +33,11 @@ def launch(resolve, fusion, bmd):
     def label(text):
         return ui.Label({'Text': text, 'Weight': 0})
 
+    def button(id_, text):
+        return ui.Button({'ID': id_, 'Text': text, 'Weight': 0, 'StyleSheet': NARROW})
+
     def folder(caption, id_, value):
-        # Resolve's button style keeps buttons at least ~95 px wide; the style
-        # rule shrinks the size hint itself, so the layout gives the room back.
-        return [label(caption), ui.LineEdit({'ID': id_, 'Text': value, 'Weight': 1}),
-                ui.Button({'ID': id_ + 'Browse', 'Text': '…', 'Weight': 0,
-                           'StyleSheet': 'QPushButton { min-width: 0px; padding: 1px 8px; }'})]
+        return [label(caption), ui.LineEdit({'ID': id_, 'Text': value, 'Weight': 1}), button(id_ + 'Browse', '…')]
 
     # UIManager ignores MinimumSize (on widgets and on the window) and Weight 0
     # collapses a LineEdit, so widths are expressed with weights. The resize
@@ -47,9 +54,8 @@ def launch(resolve, fusion, bmd):
             ui.CheckBox({'ID': 'Bypass_' + key, 'Text': text, 'Checked': key in saved.get('bypass', []), 'Weight': 0})
             for key, text in BYPASS]),
         ui.HGroup({'Weight': 0, 'Spacing': 6}, folder('Output', 'Folder', saved.get('output', str(Path.home() / 'Movies')))
-                  + [ui.Button({'ID': 'SameAsRenders', 'Text': '= Renders', 'Weight': 0,
-                                'StyleSheet': 'QPushButton { min-width: 0px; padding: 1px 8px; }'}),
-                     ui.HGap(8, 0)] + folder('Renders', 'Renders', saved.get('renders', ''))),
+                  + [button('SameAsRenders', '= Renders'), ui.HGap(8, 0)]
+                  + folder('Renders', 'Renders', saved.get('renders', '')) + [button('RendersAdd', '+')]),
         ui.HGroup({'Spacing': 0}, [ui.TextEdit({'ID': 'PreviewText', 'ReadOnly': True, 'PlainText': ''}),
                                    ui.VGap(preview_height, 0)]),
         ui.Label({'ID': 'Status', 'Text': '', 'WordWrap': True, 'Weight': 0}),
@@ -68,7 +74,7 @@ def launch(resolve, fusion, bmd):
         return Settings(items['Template'].Text, items['Prefix'].Text)
 
     def renders():
-        return items['Renders'].Text.strip() or None
+        return folders(items['Renders'].Text) or None
 
     def bypass():
         return [key for key, _ in BYPASS if items['Bypass_' + key].Checked]
@@ -119,7 +125,7 @@ def launch(resolve, fusion, bmd):
 
     def browse(field):
         def handler(event):
-            path = fusion.RequestDir(items[field].Text or str(Path.home()))
+            path = fusion.RequestDir((folders(items[field].Text) or [str(Path.home())])[0])
             if path:
                 items[field].Text = str(path)
         return handler
@@ -141,13 +147,20 @@ def launch(resolve, fusion, bmd):
     win.On['Export'].Clicked = export
     def same_as_renders(event):
         if renders():
-            items['Folder'].Text = renders()
+            items['Folder'].Text = renders()[0]
         else:
             items['Status'].Text = 'Choose a Renders folder first.'
+
+    def add_renders(event):
+        current = folders(items['Renders'].Text)
+        path = fusion.RequestDir(current[-1] if current else str(Path.home()))
+        if path:
+            items['Renders'].Text = '; '.join(current + [str(path)])
 
     win.On['FolderBrowse'].Clicked = browse('Folder')
     win.On['SameAsRenders'].Clicked = same_as_renders
     win.On['RendersBrowse'].Clicked = browse('Renders')
+    win.On['RendersAdd'].Clicked = add_renders
     for id_ in ('Template', 'Prefix', 'Renders'):
         win.On[id_].TextChanged = dirty
     for key, _ in BYPASS:
