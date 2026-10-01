@@ -3,13 +3,15 @@ import json
 from fractions import Fraction
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from unittest.mock import patch
 from urllib.parse import unquote
 from conform import fcp7, media
-from conform.exporter import build_bundle, export_current, TEMP_BIN
+from conform.exporter import build_bundle, export_current, preview, TEMP_BIN
 from conform.naming import Settings, Clip, plan, safe
 from conform.xmlbytes import Unsupported, parse
 
@@ -46,6 +48,23 @@ def fake_renders(folder):
                                            int(chars.value('width')), int(chars.value('height')),
                                            media.tc_to_frames(f.path('timecode').value('string'), base))
     return table
+
+
+def clipitem(uid, source, start, tc, first, filters=''):
+    """A 50-frame clip from `first` of a source whose timecode starts at frame `tc`."""
+    return ('<clipitem id="%s"><name>%s</name><duration>3000</duration><start>%d</start><end>%d</end><in>%d</in><out>%d</out>'
+            '<file id="f%s"><name>%s</name><pathurl>file:///src/%s</pathurl><duration>3000</duration><rate><timebase>25</timebase></rate>'
+            '<timecode><rate><timebase>25</timebase></rate><string>x</string><frame>%d</frame></timecode></file>%s</clipitem>'
+            % (uid, source, start, start + 50, first, first + 50, uid, source, source, tc, filters))
+
+
+def sequence(*tracks):
+    return ('<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media><video>%s'
+            '</video></media></sequence></xmeml>' % ''.join('<track>%s</track>' % ''.join(t) for t in tracks)).encode()
+
+
+REMAP_100 = ('<filter><start>-1</start><end>-1</end><effect><name>Time Remap</name>'
+             '<parameter><parameterid>speed</parameterid><value>100</value></parameter></effect></filter>')
 
 
 def source_ranges(items):
@@ -165,14 +184,13 @@ class ConformTests(unittest.TestCase):
         for name in ('V1-0001_a.mxf.mov', 'V1-0002_b.MXF', 'V1-0003_c.avi', 'V2-0009_d.mov', 'notes.txt'):
             (self.out / name).touch()
         folder = fcp7.Renders(self.out)
-        named = lambda n, src: plan([Clip(n, 1, 0, 1, src, src)], 't')[0]
         self.assertTrue(folder.named('V1-0001_a.mxf'))          # render kept the source extension
         self.assertTrue(folder.named('V1-0002_b.mov'))          # other extension, other case
         self.assertTrue(folder.named('V1-0003_c.mov'))          # any container
         self.assertFalse(folder.named('notes.mov'))              # text files are never renders
-        self.assertTrue(folder.has(named('x', 'd.mov')))         # numbered differently: found by source name
-        other = plan([Clip('z', 3, 0, 1, 'e.mov', 'e.mov')], 't')[0]
-        self.assertFalse(folder.has(other))                       # V3-0001: nothing with that number
+        self.assertTrue(folder.containing('d.mov'))              # numbered differently: found by source name
+        self.assertFalse(folder.numbered('V3-0001_'))            # nothing with that number
+        self.assertFalse(folder.numbered(''))                    # no number in the template: no guessing
 
     def test_stills_find_their_one_frame_render(self):
         # Resolve renders a still as a one-frame "sequence" and rewrites the source
@@ -180,29 +198,144 @@ class ConformTests(unittest.TestCase):
         for name in ('V2-0008_0.mov', 'V2-0009_title.00000000.mov', 'V2-0001_badge 00+.mov'):
             (self.out / name).touch()
         folder = fcp7.Renders(self.out)
-        by_number = lambda track, index, src: [Path(p).name for p in folder.named(
-            *(lambda n: (n.new_name, n.key))(plan([Clip(str(i), track, i, 1, src, src) for i in range(index)], 't')[-1]))]
+        by_number = lambda track, index, src: [Path(p).name for p in folder.numbered(
+            plan([Clip(str(i), track, i, 1, src, src) for i in range(index)], 't')[-1].key)]
         self.assertEqual(by_number(2, 8, '1.png'), ['V2-0008_0.mov'])
         self.assertEqual(by_number(2, 9, 'title.png'), ['V2-0009_title.00000000.mov'])
         self.assertEqual(by_number(2, 1, 'badge 18+.png'), ['V2-0001_badge 00+.mov'])
 
+    STILL = (b'<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media><video><track>'
+             b'<clipitem id="s"><name>1.png</name><duration>1500001</duration><start>0</start><end>125</end><in>90000</in><out>90125</out>'
+             b'<file id="fs"><name>1.png</name><pathurl>file:///src/1.png</pathurl><duration>1</duration><rate><timebase>25</timebase></rate>'
+             b'<timecode><string>00:00:00:00</string><rate><timebase>25</timebase></rate></timecode></file>'
+             b'<filter><start>-1</start><end>-1</end><effect><name>Time Remap</name><parameter><parameterid>speed</parameterid><value>0</value></parameter></effect></filter>'
+             b'</clipitem></track></video></media></sequence></xmeml>')
+
     def test_still_links_to_its_render_and_keeps_holding_the_frame(self):
-        xml = (b'<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media><video><track>'
-               b'<clipitem id="s"><name>1.png</name><duration>1500001</duration><start>0</start><end>125</end><in>90000</in><out>90125</out>'
-               b'<file id="fs"><name>1.png</name><pathurl>file:///src/1.png</pathurl><duration>1</duration><rate><timebase>25</timebase></rate>'
-               b'<timecode><string>00:00:00:00</string><rate><timebase>25</timebase></rate></timecode></file>'
-               b'<filter><start>-1</start><end>-1</end><effect><name>Time Remap</name><parameter><parameterid>speed</parameterid><value>0</value></parameter></effect></filter>'
-               b'</clipitem></track></video></media></sequence></xmeml>')
         (self.out / 'V1-0001_0.mov').touch()
         render = media.MediaInfo(str(self.out / 'V1-0001_0.mov'), 1, Fraction(25), 3840, 2160, 0)
+        for bypass in ((), ('retime',)):    # a hold is not a speed the render could bake in
+            with self.subTest(bypass=bypass):
+                warnings = []
+                with patch('conform.fcp7.probe', return_value=render):
+                    result = fcp7.conform(self.STILL, plan(fcp7.clips(self.STILL, []), 't'), fcp7.Renders(self.out),
+                                          bypass, warnings)
+                clip = rows(result)[(1, 0)]
+                self.assertEqual(clip.one('file').value('name'), 'V1-0001_0.mov')
+                self.assertEqual((clip.value('in'), clip.value('out')), ('90000', '90125'))
+                self.assertEqual([fcp7._effect(f) for f in clip.all('filter')], ['Time Remap'])
+                self.assertFalse(warnings)
+        offline = rows(fcp7.conform(self.STILL, plan(fcp7.clips(self.STILL, []), 't'), None, ('retime',)))[(1, 0)]
+        self.assertEqual([fcp7._effect(f) for f in offline.all('filter')], ['Time Remap'])
+
+    def link(self, xml, renders, bypass=()):
+        """Conform against renders {name: (tc, frames)} (None: unreadable); return clip -> linked render, warnings."""
+        table = {}
+        for name, facts in renders.items():
+            (self.out / name).touch()
+            table[str(self.out / name)] = facts and media.MediaInfo(str(self.out / name), facts[1], Fraction(25), 1920, 1080, facts[0])
+        def probe(path):
+            if table[path] is None:
+                raise media.MediaError('Corrupt QuickTime file')
+            return table[path]
         warnings = []
-        with patch('conform.fcp7.probe', return_value=render):
-            result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), fcp7.Renders(self.out), (), warnings)
-        clip = rows(result)[(1, 0)]
-        self.assertEqual(clip.one('file').value('name'), 'V1-0001_0.mov')
-        self.assertEqual((clip.value('in'), clip.value('out')), ('90000', '90125'))
-        self.assertEqual([fcp7._effect(f) for f in clip.all('filter')], ['Time Remap'])
+        with patch('conform.fcp7.probe', side_effect=probe):
+            result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), fcp7.Renders(self.out), bypass, warnings)
+        return {k: ci.one('file').value('name') if ci.one('file').all('pathurl') else None
+                for k, ci in rows(result).items()}, warnings
+
+    def test_renumbered_render_folder_links_each_clip_to_its_own_render(self):
+        # b was inserted after rendering, so x and y (two cuts of a.mov) moved up a
+        # number: V1-0002_a is now y's render under x's new name. Only timecode
+        # tells them apart; a render of another source is never taken for its number.
+        xml = sequence([clipitem('b', 'b.mov', 0, 5000, 10), clipitem('x', 'a.mov', 50, 1000, 10, REMAP_100),
+                        clipitem('y', 'a.mov', 100, 1000, 500)], [clipitem('d', 'd.mov', 0, 7000, 10)])
+        renders = {'V1-0001_a.mov': (1000, 70), 'V1-0002_a.mov': (1490, 70), 'V2-0001_e.mov': (7000, 100)}
+        linked, warnings = self.link(xml, renders)
+        self.assertEqual(linked, {(1, 0): None, (1, 50): 'V1-0001_a.mov', (1, 100): 'V1-0002_a.mov', (2, 0): None})
+        self.assertEqual(sorted(warnings), sorted([
+            'V1-0001_b.mov: no render found; left offline.',
+            "V1-0002_a.mov: render V1-0002_a.mov holds none of the clip's frames; matched render V1-0001_a.mov by timecode.",
+            'V1-0003_a.mov: matched render V1-0002_a.mov by timecode.',
+            'V2-0001_d.mov: no render found; left offline.']))
+        # With the speed baked into the renders their timecode proves nothing: x keeps its name's render.
+        linked, warnings = self.link(xml, renders, ('retime',))
+        self.assertEqual(linked[(1, 50)], 'V1-0002_a.mov')
+        self.assertIn('V1-0002_a.mov: render V1-0002_a.mov does not cover the clip; check handles.', warnings)
+
+    def test_render_short_after_a_trim_stays_the_clips_own(self):
+        # x was trimmed past its handles after rendering; the V2 layer of the same
+        # take covers it, but carries another grade.
+        xml = sequence([clipitem('x', 'a.mov', 0, 1000, 10)], [clipitem('y', 'a.mov', 0, 1000, 0)])
+        linked, warnings = self.link(xml, {'V1-0001_a.mov': (1012, 60), 'V2-0001_a.mov': (990, 100)})
+        self.assertEqual(linked[(1, 0)], 'V1-0001_a.mov')
+        self.assertIn('V1-0001_a.mov: render V1-0001_a.mov does not cover the clip; check handles.', warnings)
+
+    def test_decomposed_unicode_render_names_match(self):
+        # macOS network shares list й, ё, í decomposed; Resolve's XML has them composed.
+        nfd = unicodedata.normalize('NFD', 'V1-0001_белый.mov')
+        self.assertNotEqual(nfd, 'V1-0001_белый.mov')
+        xml = sequence([clipitem('x', 'белый.mov', 0, 1000, 10)])
+        linked, warnings = self.link(xml, {nfd: (1000, 70)})
+        self.assertEqual(linked[(1, 0)], nfd)
         self.assertFalse(warnings)
+
+    def test_unreadable_renders_found_by_timecode_are_named(self):
+        xml = sequence([clipitem('x', 'a.mov', 0, 1000, 10)])
+        linked, warnings = self.link(xml, {'V1-0009_a.mov': None})
+        self.assertIsNone(linked[(1, 0)])
+        self.assertEqual(warnings, ['V1-0001_a.mov: no render found (unreadable: V1-0009_a.mov); left offline.'])
+
+    def test_ramp_without_resolve_ranges_keeps_the_render_with_its_name(self):
+        # Resolve's exported ramp graph is wrong, so without the API's source range
+        # the timecode cannot prove that another render is the clip's own.
+        table = fake_renders(self.out)
+        warnings = []
+        with patch('conform.fcp7.probe', side_effect=lambda p: table[p]):
+            fcp7.conform(SOURCE, self.names, fcp7.Renders(self.out), (), warnings)
+        self.assertFalse([w for w in warnings if 'matched render' in w])
+
+    def test_still_takes_only_its_own_one_frame_render_by_its_number(self):
+        # Renders made before the edit changed: another clip's render now has the still's number.
+        for render, frames in (('V1-0001_c.mov', 300), ('V1-0001_title.00000000.mov', 1)):
+            warning = 'V1-0001_1.png: render %s has this clip number but is not this still; left offline.' % render
+            with self.subTest(render=render), tempfile.TemporaryDirectory() as temp:
+                (Path(temp) / render).touch()
+                info = media.MediaInfo(str(Path(temp) / render), frames, Fraction(25), 3840, 2160, 0)
+                warnings = []
+                with patch('conform.fcp7.probe', return_value=info):
+                    result = fcp7.conform(self.STILL, plan(fcp7.clips(self.STILL, []), 't'), fcp7.Renders(temp), (), warnings)
+                self.assertFalse(rows(result)[(1, 0)].one('file').all('pathurl'))
+                self.assertEqual(warnings, [warning])
+
+    def test_still_with_an_unreadable_render_is_not_matched_by_timecode(self):
+        # A still covers no frames, so any render of a source ending in "_1" starting at 0 would do.
+        xml = self.STILL.replace(b'</track>', b'</track><track>' + clipitem('v', 'intro_1.mov', 0, 0, 0).encode() + b'</track>')
+        (self.out / 'V1-0001_0.mov').touch()
+        (self.out / 'V2-0001_intro_1.mov').touch()
+        intro = media.MediaInfo(str(self.out / 'V2-0001_intro_1.mov'), 100, Fraction(25), 1920, 1080, 0)
+        def probe(path):
+            if path.endswith('_0.mov'):
+                raise media.MediaError('Corrupt QuickTime file')
+            return intro
+        warnings = []
+        with patch('conform.fcp7.probe', side_effect=probe):
+            result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), fcp7.Renders(self.out), (), warnings)
+        self.assertFalse(rows(result)[(1, 0)].one('file').all('pathurl'))
+        self.assertEqual(warnings, ['V1-0001_1.png: render V1-0001_0.mov unreadable (Corrupt QuickTime file).'])
+
+    def test_any_probe_failure_is_an_unreadable_render(self):
+        (self.out / 'V1-0001_1.mov').touch()
+        warnings = []
+        with patch('conform.fcp7.probe', side_effect=IndexError('list index out of range')):
+            result = fcp7.conform(self.STILL, plan(fcp7.clips(self.STILL, []), 't'), fcp7.Renders(self.out), (), warnings)
+        self.assertFalse(rows(result)[(1, 0)].one('file').all('pathurl'))
+        self.assertIn('V1-0001_1.png: render V1-0001_1.mov unreadable (list index out of range).', warnings)
+
+    def test_composite_bypass_keeps_filters_it_cannot_name(self):
+        xml = self.STILL.replace(b'</clipitem>', b'<filter><enabled>TRUE</enabled></filter></clipitem>')
+        result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), None, ('composite',))
+        self.assertEqual(len(rows(result)[(1, 0)].all('filter')), 2)
 
     def test_clips_next_to_a_transition_are_conformed(self):
         xml = (b'<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media><video><track>'
@@ -306,6 +439,8 @@ class PrefsTests(unittest.TestCase):
                 self.assertEqual(prefs.load(), {'output': '/x', 'bypass': ['crop']})
                 target.write_text('not json')
                 self.assertEqual(prefs.load(), {})
+                target.write_text(json.dumps({'output': '/x', 'csv': False, 'drt': 'yes', 'bypass': 'crop', 'zoom': 2}))
+                self.assertEqual(prefs.load(), {'output': '/x', 'csv': False})   # wrong types fall back to defaults
 
 
 class NamingTests(unittest.TestCase):
@@ -323,6 +458,17 @@ class NamingTests(unittest.TestCase):
         for template in ('{SOURCE}', '{INDEX.__class__}', '{INDEX!r}', '{INDEX:099}', '{unknown}'):
             with self.subTest(template=template), self.assertRaises(ValueError):
                 plan(clips, 't', Settings(template=template))
+
+    def test_key_is_the_name_up_to_the_source_only_when_it_holds_the_number(self):
+        clips = [Clip('a', 2, 0, 20, 'x.mov', 'x.mov')]
+        for template, key in (('{TRACK}-{INDEX:4}_{SOURCE}', 'V2-0001_'), ('{INDEX}_{SOURCE}_{TIMELINE}', '0001_'),
+                              ('{TRACK}_{SOURCE}_{INDEX}', ''), ('{SOURCE}-{INDEX}', ''),
+                              ('{TIMELINE}_{INDEX}_{SOURCE}', 'Reel 1_2_0001_'), (' {TRACK}-{INDEX}_{SOURCE}', 'V2-0001_'),
+                              ('{TRACK}-{INDEX:1} {SOURCE}', 'V2-1 ')):   # 'V2-1' would also match V2-12
+            with self.subTest(template=template):
+                named = plan(clips, 'Reel 1/2', Settings(template=template))[0]
+                self.assertEqual(named.key, key)
+                self.assertTrue(named.new_name.startswith(key))   # cleaned like the name it must match
 
     def test_every_index_width_is_zero_filled(self):
         clips = [Clip('a', 1, 0, 20, 'x.mov', 'x.mov')]
@@ -371,6 +517,27 @@ class MediaTests(unittest.TestCase):
             info = media.probe(path)
         self.assertEqual((info.frames, info.rate, info.width, info.height), (128, 25, 2048, 1152))
         self.assertEqual(media.frames_to_tc(info.tc_start, info.timebase), '03:01:39:01')
+
+    def test_ffprobe_takes_the_length_from_the_headers(self):
+        def answer(streams, timecode=None, container='mxf'):
+            out = {'streams': streams, 'format': {'format_name': container, 'tags': {'timecode': timecode} if timecode else {}}}
+            return subprocess.CompletedProcess([], 0, json.dumps(out), '')
+        mxf = {'width': 1920, 'height': 1080, 'r_frame_rate': '25/1', 'time_base': '1/25', 'duration_ts': 300}
+        with patch('conform.media._ffprobe_path', return_value='ffprobe'):
+            with patch('conform.media.subprocess.run', return_value=answer([mxf], '01:00:00:00')) as run:
+                info = media.probe('r.mxf')
+            self.assertEqual((info.frames, info.rate, info.tc_start), (300, 25, 90000))
+            self.assertEqual(run.call_count, 1)                     # no full read of the file
+            for streams, container in (([dict(mxf, duration_ts=None)], 'mxf'), ([mxf], 'mpeg')):
+                # no length in the header, or a duration that is only an estimate: count
+                counted = [answer(streams, None, container), answer([dict(mxf, nb_read_packets='299')], None, container)]
+                with self.subTest(container=container), patch('conform.media.subprocess.run', side_effect=counted) as run:
+                    self.assertEqual(media.probe('r.mpg').frames, 299)
+                    self.assertIn('-count_packets', run.call_args[0][0])
+            for failure in (answer([]), subprocess.TimeoutExpired('ffprobe', 60), answer([dict(mxf, r_frame_rate='0/0')])):
+                with self.subTest(failure=failure), self.assertRaises(media.MediaError):
+                    with patch('conform.media.subprocess.run', side_effect=[failure]):
+                        media.probe('audio.mxf')
 
     def test_drop_frame_timecode_round_trip(self):
         for tc in ('01:00:00;00', '00:10:00;00', '00:01:00;02', '23:59:59;29'):
@@ -465,6 +632,34 @@ class APITests(unittest.TestCase):
         self.assertIn(('delete clips', 1), pool.log)
         self.assertIs(pool.current, pool.root)
         self.assertEqual(TEMP_BIN, 'Conform Export (temp)')
+
+    def test_preview_marks_exactly_what_the_export_leaves_offline(self):
+        for bypass in ((), ('retime',)):    # retime bypass links the ramps the API ranges would otherwise be needed for
+            with self.subTest(bypass=bypass), tempfile.TemporaryDirectory() as temp:
+                resolve = FakeResolve()
+                folder, out = Path(temp) / 'renders', Path(temp) / 'out'
+                folder.mkdir()
+                table = fake_renders(folder)
+                twin = folder / 'V1-0001_A003C014_260817_R14E.mxf'     # a second render with the first clip's name
+                twin.touch()
+                table[str(twin)] = table[str(folder / 'V1-0001_A003C014_260817_R14E.mov')]
+                broken = sorted(table)[5]                                # a render whose header cannot be read
+                def probe(path):
+                    if path == broken:
+                        raise media.MediaError('Corrupt QuickTime file')
+                    return table[path]
+                with patch('conform.fcp7.probe', side_effect=probe):
+                    names, warnings, missing = preview(resolve, Settings(), str(folder), bypass)
+                    files, _, _ = export_current(resolve, out, renders=str(folder), bypass=bypass)
+                exported = next(p for p in files if p.suffix == '.xml').read_bytes()
+                offline = {n.clip.uid for n in names if n.clip.media} - fcp7.linked_clips(exported)
+                self.assertEqual(missing, offline)
+                by_name = {Path(n.new_name).stem: n.clip.uid for n in names}
+                self.assertIn(by_name['V1-0001_A003C014_260817_R14E'], missing)
+                self.assertIn(by_name[Path(broken).stem], missing)
+                self.assertTrue(any('several renders' in w for w in warnings))
+                # twin, broken and the logo, which has no render; without the bypass, ramps need Resolve's ranges
+                self.assertEqual(len(missing), 3 if bypass else 3 + RAMPS)
 
     def test_vertical_centre_is_corrected_for_resolve_import(self):
         fixed = parse(fcp7.for_resolve_import(SOURCE))

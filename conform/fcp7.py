@@ -11,8 +11,10 @@ from concurrent.futures import ThreadPoolExecutor
 import math
 import os
 from pathlib import Path
+import re
+import unicodedata
 from xml.sax.saxutils import quoteattr
-from .media import MediaError, frames_to_tc, probe, tc_to_frames
+from .media import frames_to_tc, probe, tc_to_frames
 from .naming import Clip
 from .xmlbytes import Unsupported, apply, parse, remove, text, text_edit
 
@@ -137,8 +139,22 @@ def _all(node, tag):
 def linked_renders(data):
     """Render files the conformed XML points at."""
     from urllib.parse import unquote, urlparse
-    return sorted({unquote(urlparse(item.file.value('pathurl')).path) for item in read(data, [])[1]
-                   if item.file.attrs.get('id', '').startswith('conform-') and item.file.all('pathurl')})
+    return sorted({unquote(urlparse(item.file.value('pathurl')).path) for item in _on_renders(data)})
+
+
+def linked_clips(data):
+    """Clips (by uid) that the conformed XML points at a render."""
+    return {item.clip.uid for item in _on_renders(data)}
+
+
+def _on_renders(data):
+    return [item for item in read(data, [])[1]
+            if item.file.attrs.get('id', '').startswith('conform-') and item.file.all('pathurl')]
+
+
+def _fold(name):
+    """Comparable file name: macOS network shares list й, ё, í decomposed (NFD)."""
+    return unicodedata.normalize('NFC', name).casefold()
 
 
 class Renders:
@@ -152,41 +168,41 @@ class Renders:
         for entry in os.scandir(self.folder):
             stem, ext = os.path.splitext(entry.name)
             if entry.is_file() and not entry.name.startswith('.') and ext.lower() not in NOT_RENDERS:
-                self.by_stem.setdefault(stem.casefold(), []).append(entry.path)
+                self.by_stem.setdefault(_fold(stem), []).append(entry.path)
         self._info = {}
 
-    def named(self, new_name, key=''):
+    def named(self, new_name):
         """Renders called like the new name, whatever their extension; also when
-        the render kept the source's extension (V1-0001_A001.mxf.mov). Failing
-        that, the ones starting with the clip's number (V2-0008_): Resolve rewrites
-        the source part for stills rendered as sequences (1.png -> V2-0008_0.mov)."""
-        stems = {os.path.splitext(new_name)[0].casefold(), new_name.casefold()}
-        found = [p for stem in sorted(stems) for p in self.by_stem.get(stem, [])]
-        if not found and key:
-            start = key.casefold()
-            found = [p for stem, paths in sorted(self.by_stem.items()) if stem.startswith(start) for p in paths]
-        return found
+        the render kept the source's extension (V1-0001_A001.mxf.mov)."""
+        stems = {_fold(os.path.splitext(new_name)[0]), _fold(new_name)}
+        return [p for stem in sorted(stems) for p in self.by_stem.get(stem, [])]
+
+    def numbered(self, key):
+        """Renders starting with the clip's number (V2-0008_): Resolve rewrites the
+        source part for stills rendered as sequences (1.png -> V2-0008_0.mov)."""
+        if not key:
+            return []
+        start = _fold(key)
+        return [p for stem, paths in sorted(self.by_stem.items()) if stem.startswith(start) for p in paths]
 
     def containing(self, source):
-        suffixes = tuple('_' + s.casefold() for s in {os.path.splitext(source)[0], source})
+        suffixes = tuple('_' + _fold(s) for s in {os.path.splitext(source)[0], source})
         return [p for stem, paths in self.by_stem.items() if stem.endswith(suffixes) for p in paths]
-
-    def has(self, named):
-        return bool(self.named(named.new_name, named.key) or self.containing(named.clip.source))
 
     def info(self, path):
         if path not in self._info:
             try:
                 self._info[path] = probe(path)
-            except (MediaError, OSError, ValueError, KeyError) as exc:
+            except Exception as exc:    # whatever the file is, it is an unreadable render, not a failed export
                 self._info[path] = exc
         return self._info[path]
 
     def prefetch(self, paths):
         # Renders often live on network shares: read headers in parallel.
         todo = sorted({p for p in paths if p not in self._info})
-        with ThreadPoolExecutor(8) as pool:
-            list(pool.map(self.info, todo))
+        if todo:
+            with ThreadPoolExecutor(8) as pool:
+                list(pool.map(self.info, todo))
 
 
 
@@ -325,7 +341,14 @@ def _constant_remap(speed, keys, frames_media):
             % (_number(speed * 100), kfs, _number(frames_media))).encode()
 
 
-def _pick(renders, named, item, timing, warnings):
+def _letters(name):
+    """A still's name the way Resolve's render keeps it: without its digits."""
+    return re.sub(r'\d+', '', unicodedata.normalize('NFC', name)).strip(' ._-').casefold()
+
+
+def _pick(renders, named, item, timing, warnings, baked=False):
+    """`baked`: the render has the clip's speed in it, so its timecode says
+    nothing about which source frames it holds."""
     label = named.new_name
     first, last = timing.source_range()
 
@@ -333,15 +356,38 @@ def _pick(renders, named, item, timing, warnings):
         return (not isinstance(info, Exception) and info.tc_start is not None and timing.start is not None
                 and info.tc_start <= timing.start + first and timing.start + last <= info.tc_start + info.frames - 1)
 
-    exact = renders.named(named.new_name, named.key)
-    renders.prefetch(exact)
-    good = [p for p in exact if not isinstance(renders.info(p), Exception)]
-    for path in exact:
-        if path not in good:
-            warnings.append('%s: render %s unreadable (%s).' % (label, Path(path).name, renders.info(path)))
+    def readable(paths):
+        renders.prefetch(paths)
+        for path in paths:
+            if isinstance(renders.info(path), Exception):
+                warnings.append('%s: render %s unreadable (%s).' % (label, Path(path).name, renders.info(path)))
+        return [p for p in paths if not isinstance(renders.info(p), Exception)]
+
+    def by_timecode(paths):
+        """The one render among `paths` that holds every frame the clip shows."""
+        renders.prefetch(paths)
+        matches = [p for p in paths if covers(renders.info(p))]
+        return matches[0] if len(matches) == 1 else None
+
+    exact = renders.named(named.new_name)
+    good = readable(exact)
     if len(good) == 1:
         info = renders.info(good[0])
         if info.tc_start is not None and timing.start is not None and not timing.freeze and not covers(info):
+            # A render made short by a later trim is still the clip's own (its
+            # grade); one that holds none of the clip's frames is another cut of
+            # the source that took this name when clips were inserted after
+            # rendering. Only when the timecode tells: not with the speed baked
+            # in, nor for a ramp without Resolve's source range.
+            elsewhere = (info.tc_start + info.frames - 1 < timing.start + first
+                         or timing.start + last < info.tc_start)
+            trusted = not baked and not (timing.ramp and not timing.api)
+            other = by_timecode([p for p in renders.containing(item.clip.source) if p != good[0]]) \
+                if elsewhere and trusted else None
+            if other:
+                warnings.append("%s: render %s holds none of the clip's frames; matched render %s by timecode."
+                                % (label, Path(good[0]).name, Path(other).name))
+                return renders.info(other)
             warnings.append('%s: render %s does not cover the clip; check handles.' % (label, Path(good[0]).name))
         return info
     if len(good) > 1:
@@ -349,13 +395,34 @@ def _pick(renders, named, item, timing, warnings):
         return None
     if exact:
         return None
-    others = renders.containing(item.clip.source)
-    renders.prefetch(others)
-    matches = [p for p in others if covers(renders.info(p))]
-    if len(matches) == 1:
-        warnings.append('%s: matched render %s by timecode.' % (label, Path(matches[0]).name))
-        return renders.info(matches[0])
-    warnings.append('%s: no render found; left offline.' % label)
+    if timing.freeze:
+        # Resolve renders a still as one frame and rewrites the digits of its name
+        # (1.png -> V2-0008_0.mov, title.png -> V2-0009_title.00000000.mov), so
+        # the clip number and the rest of the name are left. A render that differs
+        # in either belongs to another clip.
+        source = {_letters(item.clip.source), _letters(os.path.splitext(item.clip.source)[0])}
+        numbered = renders.numbered(named.key)
+        others = readable(numbered)
+        stills = [p for p in others if renders.info(p).frames == 1
+                  and _letters(unicodedata.normalize('NFC', Path(p).stem)[len(named.key):]) in source]
+        if len(stills) == 1:
+            return renders.info(stills[0])
+        if stills:
+            warnings.append('%s: several one-frame renders with this clip number; left offline.' % label)
+            return None
+        if others:
+            warnings.append('%s: render %s has this clip number but is not this still; left offline.'
+                            % (label, ', '.join(Path(p).name for p in others)))
+        if numbered:
+            return None
+    candidates = renders.containing(item.clip.source)
+    other = by_timecode(candidates)
+    if other:
+        warnings.append('%s: matched render %s by timecode.' % (label, Path(other).name))
+        return renders.info(other)
+    unreadable = [Path(p).name for p in candidates if isinstance(renders.info(p), Exception)]
+    warnings.append('%s: no render found%s; left offline.'
+                    % (label, ' (unreadable: %s)' % ', '.join(unreadable) if unreadable else ''))
     return None
 
 
@@ -372,6 +439,8 @@ def conform(data, names, renders=None, bypass=(), warnings=None, sources=None):
     sequence_base = int(root.path('sequence', 'rate', 'timebase').text)
     by_uid = {item.clip.uid: item for item in items}
     files, refs = _definitions(root)
+    if renders:
+        renders.prefetch([p for named in names if named.clip.media for p in renders.named(named.new_name)])
     edits, rewritten = [], set()
     for n, named in enumerate(names, 1):
         item = by_uid.get(named.clip.uid)
@@ -412,11 +481,11 @@ def _conform_item(data, item, named, n, timing, renders, bypass, warnings):
     length = old_out - old_in
     edits = [text_edit(node.one('name'), named.new_name)]
     fid = 'conform-%04d' % n
-    info = _pick(renders, named, item, t, warnings) if renders else None
+    drop_retime = t.filter is not None and 'retime' in bypass and not t.freeze
+    info = _pick(renders, named, item, t, warnings, drop_retime) if renders else None
     if info is not None and round(info.rate) != t.file_base:
         warnings.append('%s: render frame rate %s differs from the source; left offline.' % (label, info.rate))
         info = None
-    drop_retime = t.filter is not None and 'retime' in bypass and not t.freeze
     remap = None       # replacement Time Remap filter, bytes
     if info is not None and t.freeze:
         # A still: Resolve renders one frame and the clip keeps holding it.
@@ -482,7 +551,9 @@ def _conform_item(data, item, named, n, timing, renders, bypass, warnings):
                   text_edit(node.one('duration'), new_dur)]
     for f in node.all('filter'):
         effect = _effect(f)
-        if any(BYPASS[b] == effect for b in bypass):
+        if f is t.filter and t.freeze:
+            continue    # a still keeps holding its frame: there is no speed to bake in
+        if effect is not None and any(BYPASS[b] == effect for b in bypass):
             edits.append(remove(f))
         elif f is t.filter:
             if remap is not None:

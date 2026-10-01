@@ -36,13 +36,16 @@ class NamedClip:
 RESERVED = re.compile(r'(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?', re.IGNORECASE)
 
 
-def safe(value):
-    # Keep Unicode, spaces and source extension; produce portable future filenames.
+def _clean(value):
     # NFC so that APFS-equivalent spellings collide; C0/C1 controls and bidi
     # overrides can disguise an extension.
     value = unicodedata.normalize('NFC', value)
-    value = re.sub(r'[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069<>:"/\\|?*]', '_', value)
-    value = value.strip().strip('. ').strip()
+    return re.sub(r'[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069<>:"/\\|?*]', '_', value)
+
+
+def safe(value):
+    # Keep Unicode, spaces and source extension; produce portable future filenames.
+    value = _clean(value).strip().strip('. ').strip()
     return '_' + value if RESERVED.fullmatch(value) else value
 
 
@@ -72,20 +75,25 @@ def plan(clips, timeline, settings=Settings()):
         values = dict(TRACK='%s%d' % (settings.prefix, clip.track), INDEX=index,
                       SOURCE=clip.source, TIMELINE=timeline, PREFIX=settings.prefix)
         parts, key = [], None
-        for literal, field, spec, _ in parsed:
+        for position, (literal, field, spec, _) in enumerate(parsed):
             parts.append(literal)
             if field == 'SOURCE' and key is None:
-                key = ''.join(parts) if any(f == 'INDEX' for _, f, _, _ in parsed[:len(parts)]) else ''
+                key = ''.join(parts) if any(f == 'INDEX' for _, f, _, _ in parsed[:position]) else ''
             if field:
                 width = int(spec.rstrip('d')) if spec else 4
                 parts.append('%0*d' % (width, index) if field == 'INDEX' else str(values[field]))
         name = safe(''.join(parts))
         if not name or len(name.encode('utf-8')) > 240:
             raise ValueError('Empty or overlong output name')
+        # Cleaned like the name ("Reel 1/2" -> "Reel 1_2"), or the render would never
+        # match it; its end keeps the separator that ends the clip number.
+        key = _clean(key).lstrip().lstrip('. ').lstrip() if key else ''
+        if not name.startswith(key):
+            key = ''
         if name.casefold() in seen or clip.uid in ids:
             raise ValueError('Duplicate output name or clip identity: ' + name)
         seen.add(name.casefold()); ids.add(clip.uid)
-        result.append(NamedClip(clip, index, name, key or ''))
+        result.append(NamedClip(clip, index, name, key))
     if not result:
         raise ValueError('No supported video clips in timeline')
     return result

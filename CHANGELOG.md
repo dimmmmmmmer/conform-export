@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- The preview marks "no render" exactly where the export leaves a clip offline: it runs the export's own render matching, reads the render headers and lists the same warnings (several renders with one name, unreadable files, another frame rate, matches by timecode).
+- Render folders made before the edit changed, where the numbers are off by one, are safer:
+  - A clip is no longer linked to another source's render just because the render has its number.
+  - When the render with a clip's name holds none of the clip's frames and exactly one other render of the same source covers it, the clip takes that one.
+  - A render that holds some of the clip's frames stays the clip's own, as after a trim past the handles, and gets the "does not cover" warning.
+  - Overlapping cuts of one source cannot be told apart by timecode, so the clip keeps the render with its name.
+- A still is found by its clip number (`V2-0008_`) only in a one-frame render whose name matches apart from digits. Resolve rewrites only the digits (`1.png` → `V2-0008_0.mov`). Another clip's render with that number is left alone, with a warning. Stills named only by digits (`1.png`, `2.png`) leave nothing to compare, so they still take any one-frame render with their number.
+- Stills keep holding their frame with **Bypass → Retime** on, instead of playing a one-frame render.
+- With a timeline name that has characters file names cannot hold, stills are looked up by the right clip number. With `{INDEX}` after `{SOURCE}` in the naming template, stills are no longer matched by the part of the name before `{SOURCE}`, since that part holds no clip number.
+- Render names with letters like й, ё or í match whether the file system stores them composed or decomposed. macOS network shares list them decomposed.
+- **Bypass → Composite** no longer removes effects whose name the XML does not give.
+- A render that cannot be read for any reason, such as a file without a video stream or ffprobe timing out, is reported as unreadable. The export and the preview go on without it.
+- MXF renders: ffprobe takes the frame count from the MXF header instead of reading every render to the end.
+- Changing a **Bypass** option asks to refresh the preview, since the preview now depends on it.
+- A settings file with a value of the wrong type no longer keeps the window from opening; that setting falls back to its default.
+- The startup error message names Conform Export instead of the tool's old name.
+
 ## 1.0.2
 
 - The window remembers its settings and folders between runs (stored outside the install folder, so updates keep them).

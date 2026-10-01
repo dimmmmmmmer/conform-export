@@ -176,19 +176,41 @@ def frames_to_tc(frames, timebase, drop=False):
     return '%02d:%02d:%02d%s%02d' % (total // 3600 % 24, total // 60 % 60, total % 60, ';' if drop else ':', ff)
 
 
+def _ffprobe_json(tool, path, *extra):
+    try:
+        r = subprocess.run([tool, '-v', 'error', '-select_streams', 'v:0', *extra, '-show_entries',
+                            'stream=width,height,r_frame_rate,nb_frames,duration_ts,time_base,nb_read_packets'
+                            ':stream_tags=timecode:format=format_name:format_tags=timecode', '-of', 'json', path],
+                           capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        raise MediaError('ffprobe timed out')
+    if r.returncode:
+        raise MediaError('ffprobe failed: ' + r.stderr.strip()[:200])
+    info = json.loads(r.stdout)
+    if not info.get('streams'):
+        raise MediaError('No video stream')
+    return info
+
+
 def _ffprobe(path):
     tool = _ffprobe_path()
     if not tool:
         raise MediaError('Unsupported container and ffprobe is not installed')
-    r = subprocess.run([tool, '-v', 'error', '-select_streams', 'v:0', '-count_packets',
-                        '-show_entries', 'stream=width,height,r_frame_rate,nb_frames,nb_read_packets:stream_tags=timecode:format_tags=timecode',
-                        '-of', 'json', path], capture_output=True, text=True, timeout=60)
-    if r.returncode:
-        raise MediaError('ffprobe failed: ' + r.stderr.strip()[:200])
-    info = json.loads(r.stdout)
+    info = _ffprobe_json(tool, path)
     stream = info['streams'][0]
-    rate = Fraction(stream['r_frame_rate'])
-    frames = int(stream.get('nb_frames') or stream.get('nb_read_packets') or 0)
+    try:
+        rate = Fraction(stream['r_frame_rate'])
+    except ZeroDivisionError:
+        raise MediaError('No frame rate')
+    # The headers give the length; counting packets reads the whole file, which
+    # takes minutes on a network share. MXF stores its duration in edit units;
+    # other containers' durations can be estimates, so those are counted.
+    frames = int(stream.get('nb_frames') or 0)
+    mxf = 'mxf' in info.get('format', {}).get('format_name', '').split(',')
+    if not frames and mxf and stream.get('duration_ts') and stream.get('time_base'):
+        frames = round(int(stream['duration_ts']) * Fraction(stream['time_base']) * rate)
+    if not frames:
+        frames = int(_ffprobe_json(tool, path, '-count_packets')['streams'][0].get('nb_read_packets') or 0)
     tc = stream.get('tags', {}).get('timecode') or info.get('format', {}).get('tags', {}).get('timecode')
     drop = bool(tc and ';' in tc)
     return MediaInfo(path, frames, rate, int(stream['width']), int(stream['height']),

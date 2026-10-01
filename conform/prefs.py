@@ -15,12 +15,20 @@ def path():
     return base / 'Conform Export' / 'settings.json'
 
 
+# What the window saves; a value of another type (a hand-edited file) is ignored,
+# so the window falls back to its default instead of failing to open.
+TYPES = dict(template=str, prefix=str, output=str, renders=str, bypass=list, drt=bool, xml=bool, csv=bool)
+
+
 def load():
     try:
         values = json.loads(path().read_text(encoding='utf-8'))
-        return values if isinstance(values, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(values, dict):
+        return {}
+    return {key: value for key, value in values.items() if key in TYPES and isinstance(value, TYPES[key])
+            and (key != 'bypass' or all(isinstance(b, str) for b in value))}
 
 
 def save(values):

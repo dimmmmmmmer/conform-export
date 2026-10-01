@@ -46,6 +46,6 @@ try:
 except Exception:
     detail = traceback.format_exc()
     log(detail)
-    print('Render-Named Timeline Exporter failed. Details: ' + LOG)
+    print('Conform Export failed. Details: ' + LOG)
     print(detail)
     raise

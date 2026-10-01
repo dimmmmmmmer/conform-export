@@ -99,7 +99,7 @@ def launch(resolve, fusion, bmd):
 
     def refresh(event):
         def work():
-            names, warnings, missing = preview(resolve, settings(), renders())
+            names, warnings, missing = preview(resolve, settings(), renders(), bypass())
             show(names, warnings, missing)
             items['Status'].Text = '%d clips%s; %d warnings.' % (
                 len(names), '; %d without render' % len(missing) if renders() else '', len(warnings))
@@ -150,6 +150,8 @@ def launch(resolve, fusion, bmd):
     win.On['RendersBrowse'].Clicked = browse('Renders')
     for id_ in ('Template', 'Prefix', 'Renders'):
         win.On[id_].TextChanged = dirty
+    for key, _ in BYPASS:
+        win.On['Bypass_' + key].Clicked = dirty
     context()
     win.Show()
     try:

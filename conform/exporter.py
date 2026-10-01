@@ -119,16 +119,21 @@ def snapshot(resolve, folder):
     return project, timeline, before, path
 
 
-def preview(resolve, settings, renders=None):
+def preview(resolve, settings, renders=None, bypass=()):
+    """Names, warnings and the clips left without a render, from a dry run of the
+    export's own conform, so the preview cannot promise a render the export skips."""
     with tempfile.TemporaryDirectory(prefix='ce-preview-') as temp:
         _, timeline, _, xml_path = snapshot(resolve, temp)
+        data = xml_path.read_bytes()
         warnings = []
-        clips = fcp7.clips(xml_path.read_bytes(), warnings)
-        names = plan(clips, timeline.GetName(), settings) if clips else []
+        root, items = fcp7.read(data, warnings)
+        names = plan([i.clip for i in items], timeline.GetName(), settings) if items else []
         missing = set()
-        if renders:
-            folder = fcp7.Renders(renders)
-            missing = {p.clip.uid for p in names if p.clip.media and not folder.has(p)}
+        if names:
+            conformed = fcp7.conform(data, names, fcp7.Renders(renders) if renders else None, bypass, warnings,
+                                     source_ranges(timeline, items))
+            if renders:
+                missing = {p.clip.uid for p in names if p.clip.media} - fcp7.linked_clips(conformed)
         return names, warnings, missing
 
 

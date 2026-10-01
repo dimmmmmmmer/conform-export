@@ -54,7 +54,7 @@ On Windows and Linux, Resolve finds a normally installed Python by itself. If th
    - **Bypass:** effects already baked into the renders, which should not be applied again: transforms (including their animation), crop, retime (speed and retime process), opacity, composite mode.
    - **Output:** where the files are written. **= Renders** puts them into the render folder.
    - **Renders:** the folder with the rendered clips. This is optional. Timecode is read from QuickTime/MP4 renders directly; other containers (MXF and so on) need `ffprobe` installed.
-3. Click **Refresh / Preview** to check the names, then **Export**. The window remembers these settings for next time.
+3. Click **Refresh / Preview** to check the names and which clips have no render, then **Export**. The window remembers these settings for next time.
 
 Files go straight into the output folder: `<timeline>.xml`, `<timeline>.drt`, optionally `<timeline>.csv`, plus `<timeline>_warnings.txt` when there is something to review. Existing files are never overwritten; a new export gets `_2`, `_3`…
 
