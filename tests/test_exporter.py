@@ -284,7 +284,8 @@ class ConformTests(unittest.TestCase):
         self.assertTrue(linked[(1, 0)].endswith('/renders/V1-0001_a.mov'))
         self.assertTrue(linked[(1, 50)].endswith('/trims/V1-0002_b.mov'))
         self.assertTrue(linked[(1, 100)].endswith('/trims/V1-0003_c.mov'))
-        self.assertEqual(warnings, ['V1-0002_b.mov: rendered into 2 folders; took the newest, trims/V1-0002_b.mov.'])
+        self.assertEqual(warnings, ['V1-0002_b.mov: rendered into 2 folders; took the newest, %s.'
+                                    % os.path.join('trims', 'V1-0002_b.mov')])
 
     def test_render_in_two_folders_counts_once_when_matched_by_timecode(self):
         # Renumbered as in the test above, and x's render was also re-rendered into trims.
@@ -304,7 +305,8 @@ class ConformTests(unittest.TestCase):
                   for k, ci in rows(result).items()}
         self.assertTrue(linked[(1, 50)].endswith('/trims/V1-0001_a.mov'))
         self.assertTrue(linked[(1, 100)].endswith('/renders/V1-0002_a.mov'))
-        self.assertIn('V1-0002_a.mov: rendered into 2 folders; took the newest, trims/V1-0001_a.mov.', warnings)
+        self.assertIn('V1-0002_a.mov: rendered into 2 folders; took the newest, %s.'
+                      % os.path.join('trims', 'V1-0001_a.mov'), warnings)
 
     def test_several_different_renders_covering_a_clip_are_named_as_such(self):
         xml = sequence([clipitem('x', 'a.mov', 0, 1000, 10)])
