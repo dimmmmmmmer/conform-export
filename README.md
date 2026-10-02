@@ -1,7 +1,6 @@
 # Conform Export
 
 [![Tests](https://github.com/dimmmmmmmer/conform-export/actions/workflows/tests.yml/badge.svg)](https://github.com/dimmmmmmmer/conform-export/actions/workflows/tests.yml)
-[![Release](https://img.shields.io/github/v/release/dimmmmmmmer/conform-export)](https://github.com/dimmmmmmmer/conform-export/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![DaVinci Resolve Studio 19+](https://img.shields.io/badge/DaVinci%20Resolve%20Studio-19%2B-orange)
 ![Python 3.9–3.12](https://img.shields.io/badge/python-3.9%E2%80%933.12-3776AB)
@@ -26,7 +25,7 @@ You get **FCP7 XML** and **DRT**, plus an optional **CSV** list of names. It rep
 Works with **DaVinci Resolve Studio 19 and later**. The free version cannot run it: since 19.1 it has no script windows, and since 21.1 it no longer runs Python scripts at all.
 
 1. Install **Python 3.12** from [python.org](https://www.python.org/downloads/). Resolve needs a 64-bit Python 3.9–3.12. On Apple Silicon the Intel-only Homebrew Python will not work.
-2. Download **[conform-export.zip](https://github.com/dimmmmmmmer/conform-export/releases/latest/download/conform-export.zip)** from the latest release and unzip it.
+2. Download **[the source code](https://github.com/dimmmmmmmer/conform-export/archive/refs/heads/main.zip)** (*Code → Download ZIP* on this page) and unzip it.
 3. Run the installer:
    - **macOS:** double-click `Install.command`. If macOS blocks it, right-click it and choose *Open*.
    - **Windows:** double-click `Install.cmd`.

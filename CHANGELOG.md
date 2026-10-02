@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+There are no separate releases: the download is the source code of `main`.
+
+## Since 1.0.2
 
 - **Renders** takes several folders. **+** adds another one, for example trims rendered later into their own folder. If a clip was rendered into more than one of them, the newest render is used, with a warning, also when the clip is matched by timecode. In the command line, repeat `--renders`.
 - When several different renders cover a clip that is matched by timecode, the warning says so instead of "no render found".
