@@ -668,7 +668,9 @@ class MediaTests(unittest.TestCase):
             for path in (r'\\server\raid\renders\V1-0001_a.mov', r'C:\renders\V1-0001_a.mov'):
                 with self.subTest(path=path):
                     self.assertEqual(fcp7._path(PureWindowsPath(path).as_uri()), path)
-        self.assertEqual(fcp7._path('file://localhost/Volumes/raid/%D0%B9.mov'), '/Volumes/raid/\u0439.mov')
+        import posixpath, urllib.parse
+        with patch('urllib.request.url2pathname', urllib.parse.unquote):     # the POSIX conversion, on every OS
+            self.assertEqual(fcp7._path('file://localhost/Volumes/raid/%D0%B9.mov'), posixpath.join('/Volumes/raid', '\u0439.mov'))
 
     def test_drop_frame_timecode_round_trip(self):
         for tc in ('01:00:00;00', '00:10:00;00', '00:01:00;02', '23:59:59;29'):
