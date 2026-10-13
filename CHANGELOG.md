@@ -4,6 +4,19 @@ There are no separate releases: the download is the source code of `main`.
 
 ## Since 1.0.2
 
+- **Timeline resolution** is kept:
+  - The XML gets the timeline's real resolution. Resolve's own FCP7 export writes the project's resolution instead of a timeline's own (custom) one, for example 3840x1920 for a 3840x2160 timeline.
+  - The DRT's timeline gets it too, with the timeline's mismatched-resolution and output scaling settings. Before, it took the project's.
+- **Retime process** is kept in the DRT. Each retimed clip, including clips at another frame rate, gets its Retime Process and Motion Estimation (Optical Flow, Speed Warp…), and clips left on "Project Settings" get the project's choice written in. FCP7 XML cannot carry it, so the export says how many clips use Optical Flow.
+- The DRT also keeps each clip's Scaling, Resize Filter and Composite mode, the start timecode and the track names.
+- The DRT's audio is linked: the audio files the timeline plays are imported along with the renders. The exception is the camera file of a clip left without a render. Resolve would link that clip's picture back to the camera original, so its sound stays offline like its picture, with a warning.
+- Building the DRT no longer changes the project's resolution. Resolve sets the project to the size of an imported XML, so the XML it imports carries the project's size, and the DRT's timeline gets its own size afterwards.
+- New warnings:
+  - when a transition needs more handle than the render has, for example a 47-frame centred dissolve over renders with 10-frame handles;
+  - for titles, whose text and styling FCP7 XML cannot carry;
+  - if building the DRT changed the project's settings.
+- Rebuilt speed ramps keep the clip's frame-blending flag. The Tilt correction for timelines that are not 16:9 also covers titles and generators.
+
 - **Renders** takes several folders. **+** adds another one, for example trims rendered later into their own folder. If a clip was rendered into more than one of them, the newest render is used, with a warning, also when the clip is matched by timecode. In the command line, repeat `--renders`.
 - When several different renders cover a clip that is matched by timecode, the warning says so instead of "no render found".
 - The preview marks "no render" exactly where the export leaves a clip offline: it runs the export's own render matching, reads the render headers and lists the same warnings (several renders with one name, unreadable files, another frame rate, matches by timecode).

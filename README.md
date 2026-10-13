@@ -17,7 +17,7 @@ You get **FCP7 XML** and **DRT**, plus an optional **CSV** list of names. It rep
 - **Points every clip at its render.** Renders are found by name whatever their file extension, or by the clip number when Resolve changed the rest of the name (stills are rendered as one-frame clips such as `V2-0008_0.mov`), and in and out points are recalculated from the render's timecode, so renders trimmed with handles (for example ±10 frames) line up. Reverse clips, clips next to transitions and mixed frame rates (50p on a 25p timeline) are handled too.
 - **Leaves clips offline without a render folder.** Paths to the camera originals are removed, so nothing links back to them. The clips keep the new names and can be relinked later.
 - **Bypasses baked-in effects.** Transforms, crop, retime, opacity and composite mode can each be dropped, so they are not applied twice.
-- **Builds the DRT in Resolve itself.** Resolve imports the fixed XML into a temporary bin, exports the DRT, and the bin and timeline are deleted afterwards.
+- **Builds the DRT in Resolve itself.** Resolve imports the fixed XML with the renders and the audio files into a temporary bin, exports the DRT, and the bin and timeline are deleted afterwards. The DRT gets back what FCP7 XML cannot carry: the timeline's resolution and scaling settings, start timecode and track names, and each clip's Retime Process (Optical Flow…), Motion Estimation, Scaling, Resize Filter and Composite mode.
 - **Never changes your timeline** and starts no renders.
 
 ## Install
@@ -63,6 +63,8 @@ Files go straight into the output folder: `<timeline>.xml`, `<timeline>.drt`, op
 
 - **Speed ramps:** Resolve's own XML gets them wrong, so a ramp is exported as a constant average speed with exact start and end frames. The export lists every such clip in its warnings.
 - **Flips:** FCP7 XML cannot carry Inspector flips. You get a warning when a flipped clip's transforms are not baked into its render.
+- **Retime process, scaling and composite modes:** FCP7 XML has no place for Optical Flow, Motion Estimation, per-clip Scaling or most composite modes. The DRT keeps them; the export's warnings say how many clips use Optical Flow.
+- **Titles:** FCP7 XML carries no text or styling, so titles arrive empty or as basic text. The export warns about them.
 - **Timelines that are not 16:9:** Resolve's XML shifts vertical position. The DRT corrects for this; the XML is left as Resolve writes it.
 - **Versions and platforms:** needs DaVinci Resolve Studio 19 or later; tested with Resolve Studio 21 on macOS. Windows and Linux are covered by automated tests only. Reports from other setups are welcome.
 

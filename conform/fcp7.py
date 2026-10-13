@@ -31,6 +31,8 @@ class Item:
     node: object        # <clipitem>
     file: object        # full <file> definition it uses
     clip: Clip
+    lead: int = 0       # frames of a transition before the clip's first cut, taken from its handle
+    trail: int = 0      # and after its last cut
 
 
 def _definitions(root):
@@ -68,25 +70,43 @@ def read(data, warnings):
                     raise Unsupported('file definition missing')
                 start, end = int(node.value('start')), int(node.value('end'))
                 # FCP7 writes -1 for an edge that sits in a transition; the cut is
-                # then given by the neighbouring <transitionitem>.
+                # then given by the neighbouring <transitionitem>, and the part of
+                # the transition on this clip's side comes out of its handle.
+                lead = trail = 0
                 if start < 0:
-                    start = _cut(children[position - 1] if position else None)
+                    before = children[position - 1] if position else None
+                    start = _cut(before)
+                    lead = start - int(before.value('start')) if start is not None else 0
                 if end < 0:
-                    end = _cut(children[position + 1] if position + 1 < len(children) else None)
+                    after = children[position + 1] if position + 1 < len(children) else None
+                    end = _cut(after)
+                    trail = int(after.value('end')) - end if end is not None else 0
                 if start is None or end is None or end <= start:
                     raise Unsupported('clip edge in a transition could not be placed')
                 slug = [n.text for n in definition.all('mediaSource')] == ['Slug'] or (
                     definition.value('name') == 'Slug' and not definition.all('pathurl'))
                 items.append(Item(node, definition, Clip(
                     node.attrs.get('id') or '%d:%d' % (track, start), track, start, end - start,
-                    node.value('name'), definition.value('name'), not slug)))
+                    node.value('name'), definition.value('name'), not slug), lead, trail))
             except ValueError as exc:
                 warnings.append('V%d %s: %s; left unchanged.' % (track, label, exc))
     offline = sum(not item.clip.media for item in items)
     if offline:
         warnings.append('%d clips have no media (Resolve exports them as "Slug") and are not renamed. '
                         'Link their media in Resolve and export again.' % offline)
+    titles = sum(1 for track in root.path('sequence', 'media', 'video').all('track')
+                 for node in track.all('generatoritem') if _category(node) == 'Text')
+    if titles:
+        warnings.append('%d titles: FCP7 XML carries no text or styling, so they arrive empty or as basic text.'
+                        % titles)
     return root, items
+
+
+def _category(generator):
+    try:
+        return generator.one('effect').value('effectcategory').strip()
+    except ValueError:
+        return None
 
 
 def _cut(transition):
@@ -106,20 +126,35 @@ def clips(data, warnings):
     return [item.clip for item in read(data, warnings)[1]]
 
 
+def sequence_size(data):
+    chars = parse(data).path('sequence', 'media', 'video', 'format', 'samplecharacteristics')
+    return int(chars.value('width')), int(chars.value('height'))
+
+
+def with_size(data, width, height):
+    """The sequence format set to the timeline's real resolution: Resolve's FCP7
+    export writes the project's resolution, not a timeline's custom one (3840x1920
+    for a 3840x2160 timeline), and Resolve sizes a timeline imported from XML by it."""
+    chars = parse(data).path('sequence', 'media', 'video', 'format', 'samplecharacteristics')
+    return apply(data, [text_edit(chars.one('width'), width), text_edit(chars.one('height'), height)])
+
+
 def for_resolve_import(data):
     """Resolve writes Basic Motion's vertical centre relative to a 16:9 frame of
     the sequence width but reads it relative to the real height, so Tilt and
     anchor Y drift on other aspects (x 1920/2160 on 3840x1920). Undo that for
     the XML that Resolve itself imports to build the DRT."""
     root = parse(data)
-    chars = root.path('sequence', 'media', 'video', 'format', 'samplecharacteristics')
-    width, height = int(chars.value('width')), int(chars.value('height'))
+    try:
+        width, height = sequence_size(data)
+    except ValueError:
+        return data     # no sequence format, nothing to correct against
     factor = width * 9 / 16 / height
     if abs(factor - 1) < 1e-6:
         return data
     edits = []
     for track in root.path('sequence', 'media', 'video').all('track'):
-        for node in track.all('clipitem'):
+        for node in track.all('clipitem') + track.all('generatoritem'):
             for f in node.all('filter'):
                 if _effect(f) != 'Basic Motion':
                     continue
@@ -136,10 +171,59 @@ def _all(node, tag):
     return found
 
 
+def _path(url):
+    """File system path of a file:// URL; on Windows also C:\\... and \\\\server\\share\\..."""
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+    parts = urlparse(url)
+    host = '' if parts.netloc.lower() in ('', 'localhost') else '//' + parts.netloc
+    return url2pathname(host + parts.path)
+
+
 def linked_renders(data):
     """Render files the conformed XML points at."""
-    from urllib.parse import unquote, urlparse
-    return sorted({unquote(urlparse(item.file.value('pathurl')).path) for item in _on_renders(data)})
+    return sorted({_path(item.file.value('pathurl')) for item in _on_renders(data)})
+
+
+def audio_media(data):
+    """The files the audio clips play that exist, which the DRT's bin needs as
+    well as the renders or Resolve leaves the audio offline; and how many are missing."""
+    root = parse(data)
+    files, _ = _definitions(root)
+    found, gone = set(), set()
+    for track in (root.path('sequence', 'media', 'audio').all('track') if root.path('sequence', 'media').all('audio') else []):
+        for node in track.all('clipitem'):
+            definition = files.get(node.one('file').attrs.get('id')) if node.all('file') else None
+            if definition is not None and definition.all('pathurl'):
+                path = _path(definition.value('pathurl'))
+                (found if os.path.isfile(path) else gone).add(path)
+    return sorted(found), len(gone)
+
+
+def unrendered_sources(original, conformed):
+    """The files whose picture the clips left without a render came from."""
+    linked = linked_clips(conformed)
+    return {_path(item.file.value('pathurl')) for item in read(original, [])[1]
+            if item.clip.media and item.clip.uid not in linked and item.file.all('pathurl')}
+
+
+def retimed(data):
+    """Clips (track, start) whose frames Resolve interpolates: a speed change, or
+    a source at another frame rate than the timeline. Their retime process
+    (Optical Flow...) has no FCP7 element."""
+    root, items = read(data, [])
+    base = int(root.path('sequence', 'rate', 'timebase').text)
+    found = set()
+    for item in items:
+        try:
+            t = Timing(item, base)
+        except (ValueError, KeyError):
+            continue
+        if t.freeze:
+            continue        # a held frame has nothing to interpolate
+        if (t.filter is not None and (t.ramp or abs(t.speed - 1) > 1e-6)) or t.file_base != base:
+            found.add((item.clip.track, item.clip.start))
+    return found
 
 
 def linked_clips(data):
@@ -233,7 +317,7 @@ class Timing:
         # Resolve's exact source range, made relative to this file's start.
         self.api = tuple(x - self.start for x in api_range) if api_range and self.start is not None else None
         self.speed, self.reverse, self.ramp, self.graph, self.keys = 1.0, False, False, None, []
-        self.freeze = False
+        self.freeze, self.blend = False, 'FALSE'
         if self.filter is None:
             return
         params = {p.value('parameterid'): p for p in self.filter.one('effect').all('parameter') if p.all('parameterid')}
@@ -241,6 +325,8 @@ class Timing:
         self.freeze = not self.speed
         self.reverse = 'reverse' in params and params['reverse'].value('value').strip().upper() == 'TRUE'
         self.ramp = 'variablespeed' in params and params['variablespeed'].value('value').strip() == '1'
+        if 'frameblending' in params:
+            self.blend = params['frameblending'].value('value').strip().upper()
         self.graph = params.get('graphdict')
         for key in (self.graph.all('keyframe') if self.graph is not None else []):
             virtual = 'start' if key.all('speedkfstart') else 'end' if key.all('speedkfend') else None
@@ -332,7 +418,7 @@ def _offline_file(data, definition, fid, name):
     return ('<file id=%s' % quoteattr(fid)).encode() + chunk[chunk.index(b'>'):]
 
 
-def _constant_remap(speed, keys, frames_media):
+def _constant_remap(speed, keys, frames_media, blend='FALSE'):
     """Time Remap at one speed (for ramps, whose exported graph Resolve gets wrong)."""
     flags = ('speedkfstart', 'speedkfin', 'speedkfout', 'speedkfend')
     kfs = ''.join('<keyframe><when>%s</when><value>%s</value><speedvirtualkf>TRUE</speedvirtualkf><%s>TRUE</%s></keyframe>'
@@ -342,11 +428,11 @@ def _constant_remap(speed, keys, frames_media):
             '<effectcategory>motion</effectcategory>'
             '<parameter><name>speed</name><parameterid>speed</parameterid><value>%s</value><valuemin>-10000</valuemin><valuemax>10000</valuemax></parameter>'
             '<parameter><name>reverse</name><parameterid>reverse</parameterid><value>FALSE</value></parameter>'
-            '<parameter><name>frameblending</name><parameterid>frameblending</parameterid><value>FALSE</value></parameter>'
+            '<parameter><name>frameblending</name><parameterid>frameblending</parameterid><value>%s</value></parameter>'
             '<parameter><name>variablespeed</name><parameterid>variablespeed</parameterid><value>0</value><valuemin>0</valuemin><valuemax>1</valuemax></parameter>'
             '<parameter><name>graphdict</name><parameterid>graphdict</parameterid>%s<valuemin>0</valuemin><valuemax>%s</valuemax>'
             '<interpolation><name>FCPCurve</name></interpolation></parameter></effect></filter>'
-            % (_number(speed * 100), kfs, _number(frames_media))).encode()
+            % (_number(speed * 100), 'TRUE' if blend == 'TRUE' else 'FALSE', kfs, _number(frames_media))).encode()
 
 
 def _letters(name):
@@ -548,7 +634,7 @@ def _conform_item(data, item, named, n, timing, renders, bypass, warnings):
                 new_in = _round((min(a, b) / t.k - lo) / speed)
                 new_dur = _round((hi - lo) / speed)
                 remap = _constant_remap(speed, [(0, 0), (new_in, min(a, b) / t.k - lo), (new_in + length, max(a, b) / t.k - lo),
-                                                (new_dur, hi - lo)], info.frames / t.k)
+                                                (new_dur, hi - lo)], info.frames / t.k, t.blend)
                 warnings.append('%s: speed ramp exported as constant %.1f%%.' % (label, speed * 100))
             else:
                 origin = t.clip_frame(hi if t.reverse else lo)
@@ -556,6 +642,10 @@ def _conform_item(data, item, named, n, timing, renders, bypass, warnings):
                 new_dur = max(_round(abs(t.clip_frame(hi) - t.clip_frame(lo))), new_in + length)
         if new_in < 0 or new_in + length > new_dur:
             warnings.append('%s: render is shorter than the clip; check handles.' % label)
+        elif new_in < item.lead or new_dur - new_in - length < item.trail:
+            # The transition plays frames beyond the cut out of the handles.
+            warnings.append('%s: the transition needs %d frames of handle before and %d after; the render has %d and %d.'
+                            % (label, item.lead, item.trail, new_in, new_dur - new_in - length))
         ref = node.one('file')
         edits.append((ref.start, ref.end, _render_file(fid, info, Path(info.path).name)))
         chars = item.file.all('media') and item.file.path('media').all('video')

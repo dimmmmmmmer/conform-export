@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import unquote
 from conform import fcp7, media
-from conform.exporter import build_bundle, export_current, preview, TEMP_BIN
+from conform.exporter import build_bundle, drt_maker, export_current, preview, TEMP_BIN
 from conform.naming import Settings, Clip, plan, safe
 from conform.xmlbytes import Unsupported, parse
 
@@ -383,6 +383,71 @@ class ConformTests(unittest.TestCase):
         self.assertFalse(rows(result)[(1, 0)].one('file').all('pathurl'))
         self.assertIn('V1-0001_1.png: render V1-0001_1.mov unreadable (list index out of range).', warnings)
 
+    def test_render_handles_must_cover_the_transition(self):
+        # A centred 20-frame dissolve on the cut at 50: a plays 10 frames past its
+        # out point, b starts 10 frames before its in point, out of their handles.
+        def item(uid, source, start, end, first, tc):
+            return ('<clipitem id="%s"><name>%s</name><duration>3000</duration><start>%d</start><end>%d</end><in>%d</in><out>%d</out>'
+                    '<file id="f%s"><name>%s</name><pathurl>file:///src/%s</pathurl><duration>3000</duration><rate><timebase>25</timebase></rate>'
+                    '<timecode><rate><timebase>25</timebase></rate><string>x</string><frame>%d</frame></timecode></file></clipitem>'
+                    % (uid, source, start, end, first, first + 50, uid, source, source, tc))
+        xml = sequence([item('a', 'a.mov', 0, -1, 100, 1000),
+                        '<transitionitem><start>40</start><end>60</end><alignment>center</alignment></transitionitem>',
+                        item('b', 'b.mov', -1, 100, 100, 5000)])
+        self.assertEqual([(i.lead, i.trail) for i in fcp7.read(xml, [])[1]], [(0, 10), (10, 0)])
+        for handles, expected in ((10, []), (5, [
+                'V1-0001_a.mov: the transition needs 0 frames of handle before and 10 after; the render has 5 and 5.',
+                'V1-0002_b.mov: the transition needs 10 frames of handle before and 0 after; the render has 5 and 5.'])):
+            with self.subTest(handles=handles), tempfile.TemporaryDirectory() as temp:
+                table = {}
+                for name, tc in (('V1-0001_a.mov', 1100), ('V1-0002_b.mov', 5100)):
+                    path = str(Path(temp) / name); Path(path).touch()
+                    table[path] = media.MediaInfo(path, 50 + 2 * handles, Fraction(25), 1920, 1080, tc - handles)
+                warnings = []
+                with patch('conform.fcp7.probe', side_effect=lambda p: table[p]):
+                    fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), fcp7.Renders(temp), (), warnings)
+                self.assertEqual(warnings, expected)
+
+    def test_rebuilt_ramp_keeps_frame_blending(self):
+        ci = rows(SOURCE)[(1, 517)]
+        chunk = SOURCE[ci.start:ci.end]
+        at = chunk.index(b'<value>FALSE</value>', chunk.index(b'<parameterid>frameblending</parameterid>'))
+        chunk = chunk[:at] + b'<value>TRUE</value>' + chunk[at + len(b'<value>FALSE</value>'):]
+        blended = SOURCE[:ci.start] + chunk + SOURCE[ci.end:]
+        table = fake_renders(self.out)
+        with patch('conform.fcp7.probe', side_effect=lambda p: table[p]):
+            names = plan(fcp7.clips(blended, []), 'full-mv')
+            items = fcp7.read(blended, [])[1]
+            result = fcp7.conform(blended, names, fcp7.Renders(self.out), (), [], source_ranges(items))
+        remap = next(f for f in rows(result)[(1, 517)].all('filter') if fcp7._effect(f) == 'Time Remap')
+        params = {p.value('parameterid'): p.value('value') for p in remap.one('effect').all('parameter') if p.all('value')}
+        self.assertEqual((params['variablespeed'], params['frameblending']), ('0', 'TRUE'))
+
+    def test_what_resolve_interpolates_and_what_the_drt_must_import(self):
+        retimed = fcp7.retimed(SOURCE)
+        self.assertIn((1, 2074), retimed)          # 50p at 50% (Time Remap)
+        self.assertIn((1, 4608), retimed)          # 30p on 25p, no Time Remap
+        self.assertIn((1, 3237), retimed)          # 50p on 25p, no Time Remap
+        self.assertIn((1, 517), retimed)           # a ramp
+        self.assertNotIn((1, 0), retimed)
+        self.assertNotIn((2, 0), retimed)          # the logo: a still at 24 fps holds one frame
+        self.assertEqual(len(retimed), 62)
+        self.assertNotIn((1, 0), fcp7.retimed(self.STILL))
+        song = self.out / 'song.wav'
+        song.write_bytes(b'')
+        xml = (b'<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media><video><track/></video>'
+               b'<audio><track><clipitem id="m"><name>song</name><start>0</start><end>10</end><in>0</in><out>10</out>'
+               b'<file id="s"><name>song.wav</name><pathurl>' + song.resolve().as_uri().encode() + b'</pathurl></file></clipitem>'
+               b'<clipitem id="g"><name>gone</name><start>10</start><end>20</end><in>0</in><out>10</out>'
+               b'<file id="g"><name>gone.wav</name><pathurl>file:///nowhere/gone.wav</pathurl></file></clipitem>'
+               b'<clipitem id="m2"><name>song</name><start>20</start><end>30</end><in>0</in><out>10</out><file id="s"/></clipitem>'
+               b'</track></audio></media></sequence></xmeml>')
+        self.assertEqual(fcp7.audio_media(xml), ([str(song.resolve())], 1))
+        self.assertEqual(fcp7.sequence_size(fcp7.with_size(SOURCE, 3996, 2160)), (3996, 2160))
+        warnings = []
+        fcp7.read(SOURCE, warnings)
+        self.assertIn('1 titles: FCP7 XML carries no text or styling, so they arrive empty or as basic text.', warnings)
+
     def test_composite_bypass_keeps_filters_it_cannot_name(self):
         xml = self.STILL.replace(b'</clipitem>', b'<filter><enabled>TRUE</enabled></filter></clipitem>')
         result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), None, ('composite',))
@@ -467,7 +532,7 @@ class BundleTests(unittest.TestCase):
 
     def test_drt_maker_gets_conformed_xml(self):
         seen = []
-        def make(xml, drt, renders):
+        def make(xml, drt, renders, sounds=()):
             seen.append((xml.read_bytes(), renders)); drt.write_bytes(b'drt')
         files, _, _ = build_bundle(self.out / 'in.xml', self.out, 'full-mv', export_drt=True, export_xml=False, make_drt=make)
         self.assertEqual(sorted(p.name for p in files if p.suffix != '.txt'), ['full-mv.csv', 'full-mv.drt'])
@@ -596,13 +661,32 @@ class MediaTests(unittest.TestCase):
                     with patch('conform.media.subprocess.run', side_effect=[failure]):
                         media.probe('audio.mxf')
 
+    def test_file_urls_become_paths_on_windows_too(self):
+        import nturl2path
+        from pathlib import PureWindowsPath
+        with patch('urllib.request.url2pathname', nturl2path.url2pathname):
+            for path in (r'\\server\raid\renders\V1-0001_a.mov', r'C:\renders\V1-0001_a.mov'):
+                with self.subTest(path=path):
+                    self.assertEqual(fcp7._path(PureWindowsPath(path).as_uri()), path)
+        self.assertEqual(fcp7._path('file://localhost/Volumes/raid/%D0%B9.mov'), '/Volumes/raid/\u0439.mov')
+
     def test_drop_frame_timecode_round_trip(self):
         for tc in ('01:00:00;00', '00:10:00;00', '00:01:00;02', '23:59:59;29'):
             self.assertEqual(media.frames_to_tc(media.tc_to_frames(tc, 30, True), 30, True), tc)
 
 
+class Forbidden(BaseException):
+    """A broken safety rule; BaseException so that no `except Exception` hides it."""
+
+
+CLIP_DEFAULTS = {'ZoomX': 2.0, 'FlipX': True, 'Opacity': 100.0, 'RetimeProcess': 0, 'MotionEstimation': 0,
+                 'Scaling': 0, 'ResizeFilter': 0, 'CompositeMode': 0}
+
+
 class FakeItem:
-    def __init__(self, track, clip): self.track, self.c = track, clip
+    def __init__(self, track, clip, props=None, owner=None):
+        self.track, self.c, self.owner = track, clip, owner
+        self.props = dict(CLIP_DEFAULTS, **(props or {}))
     def GetUniqueId(self): return self.c.uid
     def GetName(self): return self.c.old_name
     def GetStart(self): return self.c.start + 90000
@@ -610,10 +694,12 @@ class FakeItem:
     def GetSourceStartFrame(self): return 0
     def GetSourceEndFrame(self): return self.c.duration
     def GetProperty(self, name=None):
-        props = getattr(self, 'props', {'ZoomX': 2.0, 'FlipX': True, 'Opacity': 100.0})
-        return props if name is None else props.get(name)
+        return dict(self.props) if name is None else self.props.get(name)
     def SetProperty(self, name, value):
-        self.props = dict(self.GetProperty(), **{name: value}); return True
+        if self.owner is None:
+            raise Forbidden("the user's timeline must never change")
+        self.owner.written()
+        self.props[name] = value; return True
 
 
 class FakeFolder:
@@ -622,8 +708,8 @@ class FakeFolder:
 
 
 class FakePool:
-    def __init__(self):
-        self.root, self.folders, self.current, self.log = FakeFolder('Master'), [], None, []
+    def __init__(self, project):
+        self.project, self.root, self.folders, self.log, self.imported = project, FakeFolder('Master'), [], [], None
         self.current = self.root
     def GetRootFolder(self): return self.root
     def GetCurrentFolder(self): return self.current
@@ -631,47 +717,111 @@ class FakePool:
     def AddSubFolder(self, parent, name):
         f = FakeFolder(name); self.folders.append(f); return f
     def ImportMedia(self, paths):
-        self.current.clips += paths; return ['clip'] * len(paths)
+        self.log.append(('media', list(paths))); self.current.clips += paths; return ['clip'] * len(paths)
     def ImportTimelineFromFile(self, path, options):
         self.log.append(('import', options)); self.current.clips.append('render clip')
-        return FakeImported()
-    def DeleteTimelines(self, t): self.log.append('delete timeline'); return True
+        self.imported = FakeImported(self.project, options['timelineName'])
+        self.project.timelines.append(self.imported)
+        # Resolve 21 gives the project the resolution of an imported XML.
+        try:
+            width, height = fcp7.sequence_size(Path(path).read_bytes())
+            self.project.settings.update(timelineResolutionWidth=str(width), timelineResolutionHeight=str(height))
+        except ValueError:
+            pass    # an XML without a sequence format
+        self.project.settings.update(self.project.import_changes)
+        return self.imported
+    def DeleteTimelines(self, timelines):
+        for t in timelines:
+            if self.project.current is t:
+                raise Forbidden('a timeline was deleted while current')
+            t.deleted = True; self.project.timelines.remove(t)
+        self.log.append('delete timeline'); return True
     def DeleteClips(self, c): self.log.append(('delete clips', len(c))); return True
     def DeleteFolders(self, f): self.folders = [x for x in self.folders if x not in f]; return True
 
 
 class FakeImported:
-    def __init__(self): self.items = [FakeItem(1, fcp7.clips(SOURCE, [])[0])]
+    """Resolve's timeline from the XML: the project's settings, default clip properties."""
+    def __init__(self, project, name):
+        self.project, self.name, self.deleted, self.start, self.names = project, name, False, '00:00:00:00', {}
+        self.settings = {'useCustomSettings': '0', 'timelineResolutionWidth': '3840', 'timelineResolutionHeight': '2160',
+                         'timelinePixelAspectRatio': 'square', 'timelineFrameRate': '25'}
+        self.items = {t: [FakeItem(t, c, owner=self) for c in fcp7.clips(SOURCE, []) if c.track == t] for t in (1, 2)}
+    def written(self):
+        if self.project.current is not self or self.deleted:
+            raise Forbidden('the temporary timeline was written while not current')
+        self.project.writes += 1
+        if self.project.switch_away_after == self.project.writes:
+            self.project.current = self.project.timeline     # the user clicks their own timeline
+    def item(self, key):
+        return next(i for i in self.items[key[0]] if i.c.start == key[1])
+    def GetUniqueId(self): return 'imported'
+    def GetName(self): return self.name
     def GetStartFrame(self): return 90000
-    def GetTrackCount(self, kind): return 1
-    def GetItemListInTrack(self, kind, track): return self.items
+    def GetTrackCount(self, kind): return 2
+    def GetItemListInTrack(self, kind, track): return self.items[track] if kind == 'video' else []
+    def GetSetting(self, key=None): return self.settings.get(key, '')
+    def SetSetting(self, key, value):
+        self.written()
+        if key in self.project.refuse_settings or (key != 'useCustomSettings' and self.settings['useCustomSettings'] != '1'):
+            return False    # "useCustomSettings needs to be set to change timeline properties"
+        self.settings[key] = value; return True
+    def GetStartTimecode(self): return self.start
+    def SetStartTimecode(self, tc): self.written(); self.start = tc; return True
+    def GetTrackName(self, kind, index): return self.names.get((kind, index), '%s %d' % (kind.title(), index))
+    def SetTrackName(self, kind, index, name): self.written(); self.names[(kind, index)] = name; return True
     def Export(self, path, kind): Path(path).write_bytes(b'drt'); return True
 
 
 class FakeTimeline:
-    def __init__(self):
+    """The user's timeline: read-only for the tool."""
+    def __init__(self, settings=None, props=None, start='00:00:00:00', names=None):
         self.clips = fcp7.clips(SOURCE, [])
+        self.settings = dict({'useCustomSettings': '0', 'timelineResolutionWidth': '3840',
+                              'timelineResolutionHeight': '1920', 'timelineFrameRate': '25'}, **(settings or {}))
+        self.props, self.start, self.names = props or {}, start, names or {}
     def GetUniqueId(self): return 'timeline'
     def GetName(self): return 'full-mv'
     def GetStartFrame(self): return 90000
     def GetTrackCount(self, kind): return 2
-    def GetItemListInTrack(self, kind, track): return [FakeItem(track, c) for c in self.clips if c.track == track]
+    def GetItemListInTrack(self, kind, track):
+        return [FakeItem(track, c, self.props.get((track, c.start))) for c in self.clips if c.track == track] if kind == 'video' else []
+    def GetSetting(self, key=None): return self.settings.get(key, '')
+    def GetStartTimecode(self): return self.start
+    def GetTrackName(self, kind, index): return self.names.get((kind, index), '%s %d' % (kind.title(), index))
     def Export(self, path, kind):
         if kind != 'xml': return False
         Path(path).write_bytes(SOURCE); return True
 
 
 class FakeProject:
-    def __init__(self): self.timeline, self.pool = FakeTimeline(), FakePool()
+    def __init__(self, project=None, refuse_switch=False, refuse_back=False, refuse_settings=(), switch_away_after=None,
+                 import_changes=None, **timeline):
+        self.timeline = FakeTimeline(**timeline)
+        self.current, self.timelines, self.refuse_switch = self.timeline, [self.timeline], refuse_switch
+        self.refuse_back, self.refuse_settings, self.writes = refuse_back, set(refuse_settings), 0
+        self.switch_away_after, self.import_changes = switch_away_after, import_changes or {}
+        self.settings = dict({'timelineResolutionWidth': '3840', 'timelineResolutionHeight': '2160',
+                              'timelineFrameRate': '25'}, **(project or {}))
+        self.pool = FakePool(self)
     def GetName(self): return 'project'
-    def GetCurrentTimeline(self): return self.timeline
-    def SetCurrentTimeline(self, t): return True
+    def GetCurrentTimeline(self): return self.current
+    def SetCurrentTimeline(self, t):
+        if (self.refuse_switch and t is not self.timeline) or (self.refuse_back and t is self.timeline):
+            return False
+        self.current = t; return True
+    def GetSetting(self, key): return self.settings.get(key, '')
+    def GetTimelineCount(self): return len(self.timelines)
+    def GetTimelineByIndex(self, index): return self.timelines[index - 1]
     def GetMediaPool(self): return self.pool
 
 
 class FakeResolve:
     EXPORT_FCP_7_XML, EXPORT_DRT = 'xml', 'drt'
-    def __init__(self): self.project = FakeProject()
+    # As Resolve 21 hands them over: floats.
+    RETIME_USE_PROJECT, RETIME_NEAREST, RETIME_FRAME_BLEND, RETIME_OPTICAL_FLOW = 0.0, 1.0, 2.0, 3.0
+    MOTION_EST_SPEED_WARP_BETTER, MOTION_EST_METAL = 5.0, 7.0
+    def __init__(self, **project): self.project = FakeProject(**project)
     def GetProjectManager(self): return self
     def GetCurrentProject(self): return self.project
 
@@ -717,6 +867,145 @@ class APITests(unittest.TestCase):
                 self.assertTrue(any('several renders' in w for w in warnings))
                 # twin, broken and the logo, which has no render; without the bypass, ramps need Resolve's ranges
                 self.assertEqual(len(missing), 3 if bypass else 3 + RAMPS)
+
+    def export(self, resolve, bypass=()):
+        with tempfile.TemporaryDirectory() as temp:
+            files, names, warnings = export_current(resolve, temp, bypass=bypass)
+            xml = next(p for p in files if p.suffix == '.xml').read_bytes()
+        return resolve.project.pool.imported, xml, warnings
+
+    def test_drt_gets_back_what_fcp7_xml_cannot_carry(self):
+        retimed = sorted(fcp7.retimed(SOURCE))
+        own, on_project, plain = retimed[0], (1, 4608), (1, 0)     # (1, 4608): 30p on 25p, no Time Remap
+        self.assertNotIn(plain, retimed)
+        resolve = FakeResolve(
+            settings={'useCustomSettings': '1', 'timelineResolutionWidth': '3996', 'timelineResolutionHeight': '2160',
+                      'timelineInputResMismatchBehavior': 'scaleToCrop', 'timelineOutputResMatchTimelineRes': '1'},
+            props={own: {'RetimeProcess': 3, 'MotionEstimation': 6}, plain: {'Scaling': 3, 'CompositeMode': 11}},
+            start='01:00:00:00', names={('video', 1): 'PLATES'},
+            project={'imageRetimeInterpolation': 'Optical Flow', 'imageMotionEstimationMode': 'Speed Warp Better'})
+        imported, xml, warnings = self.export(resolve)
+        self.assertEqual(imported.name, 'full-mv conform')
+        self.assertEqual({k: imported.settings[k] for k in ('useCustomSettings', 'timelineResolutionWidth',
+                                                             'timelineResolutionHeight', 'timelineInputResMismatchBehavior')},
+                         {'useCustomSettings': '1', 'timelineResolutionWidth': '3996', 'timelineResolutionHeight': '2160',
+                          'timelineInputResMismatchBehavior': 'scaleToCrop'})
+        self.assertEqual((imported.start, imported.GetTrackName('video', 1)), ('01:00:00:00', 'PLATES'))
+        props = lambda key, *keys: [imported.item(key).props[k] for k in keys]
+        self.assertEqual(props(own, 'RetimeProcess', 'MotionEstimation'), [3, 6])           # its own setting
+        self.assertEqual(props(on_project, 'RetimeProcess', 'MotionEstimation'), [3, 5])    # the project's, made explicit
+        self.assertEqual(props(plain, 'RetimeProcess', 'Scaling', 'CompositeMode'), [0, 3, 11])
+        self.assertIs(resolve.project.current, resolve.project.timeline)                     # the user's timeline again
+        self.assertEqual(resolve.project.timelines, [resolve.project.timeline])
+        # The XML: the real resolution, and a word about what it cannot carry.
+        self.assertEqual(fcp7.sequence_size(xml), (3996, 2160))
+        self.assertIn("Resolve's XML gave the timeline as 3840x1920; set to its real 3996x2160.", warnings)
+        self.assertEqual(resolve.project.settings['timelineResolutionWidth'], '3840')   # the import left the project alone
+        self.assertFalse([w for w in warnings if 'changed the project' in w])
+        self.assertIn('62 retimed clips use Optical Flow; FCP7 XML cannot say so (the DRT keeps it).', warnings)
+        self.assertEqual([w for w in warnings if w.startswith('DRT:')],
+                         ['DRT: 4 audio files the timeline plays are not on disk; that audio is offline.'])
+        self.assertEqual(props((2, 0), 'RetimeProcess'), [0])      # the logo still: nothing to interpolate
+
+    def test_drt_bin_gets_the_audio_too(self):
+        resolve = FakeResolve()
+        with tempfile.TemporaryDirectory() as temp:
+            song = Path(temp) / 'song.wav'
+            song.write_bytes(b'')
+            xml = Path(temp) / 'conformed.xml'
+            xml.write_bytes(b'<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media>'
+                            b'<video><track/></video><audio><track><clipitem id="m"><name>song</name><start>0</start><end>10</end>'
+                            b'<in>0</in><out>10</out><file id="s"><name>song.wav</name><pathurl>' + song.resolve().as_uri().encode() +
+                            b'</pathurl></file></clipitem></track></audio></media></sequence></xmeml>')
+            drt_maker(resolve, resolve.project, resolve.project.timeline)(
+                xml, Path(temp) / 'out.drt', ['/r/V1-0001_a.mov'], [str(song.resolve())])
+        media_calls = [entry[1] for entry in resolve.project.pool.log if entry[0] == 'media']
+        self.assertEqual(media_calls, [['/r/V1-0001_a.mov'], [str(song.resolve())]])
+
+    def test_drt_leaves_out_the_camera_files_of_clips_without_a_render(self):
+        # Resolve links a clip without a render to its camera file in the bin (by
+        # timecode), so that file stays out even though its sound is wanted.
+        with tempfile.TemporaryDirectory() as temp:
+            camera, song = Path(temp) / 'a.mov', Path(temp) / 'song.wav'
+            camera.write_bytes(b''); song.write_bytes(b'')
+            uri = lambda p: p.resolve().as_uri().encode()
+            xml = Path(temp) / 'in.xml'
+            xml.write_bytes(
+                b'<?xml version="1.0" encoding="UTF-8"?><xmeml><sequence><rate><timebase>25</timebase></rate><media><video><track>'
+                b'<clipitem id="v"><name>a.mov</name><duration>100</duration><start>0</start><end>50</end><in>10</in><out>60</out>'
+                b'<file id="fa"><name>a.mov</name><pathurl>' + uri(camera) + b'</pathurl><duration>100</duration>'
+                b'<rate><timebase>25</timebase></rate><media><video/><audio/></media></file></clipitem></track></video>'
+                b'<audio><track><clipitem id="x"><name>a.mov</name><start>0</start><end>50</end><in>10</in><out>60</out>'
+                b'<file id="fa"/></clipitem><clipitem id="m"><name>song</name><start>0</start><end>50</end><in>0</in><out>50</out>'
+                b'<file id="s"><name>song.wav</name><pathurl>' + uri(song) + b'</pathurl><media><audio/></media></file>'
+                b'</clipitem></track></audio></media></sequence></xmeml>')
+            seen = []
+            def make(xml_file, drt, renders, sounds=()):
+                seen.append(list(sounds)); drt.write_bytes(b'drt')
+            _, _, warnings = build_bundle(xml, Path(temp) / 'out', 't', export_drt=True, make_drt=make)
+        self.assertEqual(seen, [[str(song.resolve())]])
+        self.assertIn('DRT: the sound of clips without a render stays offline (1 camera files), or their picture would '
+                      'link back to the camera originals.', warnings)
+
+    def test_drt_respects_bypass_and_says_what_it_could_not_restore(self):
+        retimed = sorted(fcp7.retimed(SOURCE))
+        resolve = FakeResolve(props={retimed[0]: {'RetimeProcess': 3}, (1, 0): {'CompositeMode': 11}},
+                              project={'imageRetimeInterpolation': 'Optical Flow'})
+        imported, _, warnings = self.export(resolve, ('retime', 'composite'))
+        self.assertEqual(imported.item(retimed[0]).props['RetimeProcess'], 0)   # speed baked into the render
+        self.assertEqual(imported.item((1, 0)).props['CompositeMode'], 0)
+        resolve = FakeResolve(project={'imageRetimeInterpolation': 'something new'})
+        _, _, warnings = self.export(resolve)
+        self.assertIn("DRT: the project's Frame Interpolation (something new) was not recognised; %d retimed clips "
+                      "follow the project that opens the DRT for it." % len(retimed), warnings)
+        resolve = FakeResolve(refuse_switch=True, settings={'useCustomSettings': '1', 'timelineResolutionWidth': '3996'})
+        imported, _, warnings = self.export(resolve)
+        self.assertIn('DRT: the temporary timeline could not be made current, so its settings were not restored.', warnings)
+        self.assertEqual(imported.settings['timelineResolutionWidth'], '3840')
+
+    def test_restoring_stops_when_the_user_switches_timelines(self):
+        retimed = sorted(fcp7.retimed(SOURCE))
+        # Timeline writes come first (useCustomSettings, height, start timecode), then the clips.
+        for after in (1, 3, 5):      # writes made before the user clicks their own timeline
+            with self.subTest(after=after):
+                resolve = FakeResolve(switch_away_after=after, start='01:00:00:00',
+                                      props={key: {'RetimeProcess': 3} for key in retimed})
+                imported, _, warnings = self.export(resolve)    # Forbidden if any write came after the click
+                changed = [key for key in retimed if imported.item(key).props['RetimeProcess'] == 3]
+                self.assertEqual(len(changed), max(0, after - 3))
+        self.assertIn('DRT: you switched timelines while the DRT was being built, so the rest of its settings were not '
+                      'restored; export again to get them.', warnings)
+        self.assertIn('62 retimed clips use Optical Flow; FCP7 XML cannot say so.', warnings)   # no promise kept
+
+    def test_drt_says_what_went_wrong(self):
+        resolve = FakeResolve(settings={'useCustomSettings': '1', 'timelineResolutionWidth': '3996',
+                                        'timelineInputResMismatchBehavior': 'scaleToCrop'},
+                              refuse_settings={'timelineInputResMismatchBehavior'},
+                              import_changes={'timelineResolutionWidth': '1920'})
+        _, _, warnings = self.export(resolve)
+        self.assertIn('DRT: could not restore timelineInputResMismatchBehavior.', warnings)
+        self.assertIn("Resolve changed the project's settings while building the DRT (timelineResolutionWidth 3840 -> "
+                      "1920); check Project Settings.", warnings)
+        resolve = FakeResolve(refuse_back=True)
+        imported, _, warnings = self.export(resolve)
+        self.assertIn(imported, resolve.project.timelines)    # never deleted while current
+        self.assertIn("DRT: Resolve did not switch back to your timeline, so the temporary timeline 'full-mv conform' "
+                      "and the bin 'Conform Export (temp)' were left in the project; delete them by hand.", warnings)
+        with patch('conform.exporter.RESTORE_DRT', False):
+            resolve = FakeResolve(settings={'useCustomSettings': '1', 'timelineResolutionWidth': '3996'},
+                                  project={'imageRetimeInterpolation': 'opticalFlow'})
+            imported, _, warnings = self.export(resolve)
+        self.assertEqual(imported.settings['timelineResolutionWidth'], '3840')
+        self.assertIn('62 retimed clips use Optical Flow; FCP7 XML cannot say so.', warnings)
+
+    def test_project_retime_settings_map_to_clip_constants(self):
+        from conform.exporter import project_retime
+        resolve = FakeResolve()
+        for process, motion, expected in (('opticalFlow', 'speedWarpBetter', (3, 5)), ('opticalFlow', 'speedWarpMetal', (3, 7)),
+                                          ('frameBlend', '', (2, None)), ('nearest', 'enhancedFaster', (1, None))):
+            with self.subTest(process=process, motion=motion):
+                found = {'project': {'imageRetimeInterpolation': process, 'imageMotionEstimationMode': motion}}
+                self.assertEqual(project_retime(resolve, found), expected)
 
     def test_vertical_centre_is_corrected_for_resolve_import(self):
         fixed = parse(fcp7.for_resolve_import(SOURCE))
