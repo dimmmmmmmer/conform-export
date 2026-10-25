@@ -314,6 +314,17 @@ class ConformTests(unittest.TestCase):
         self.assertIsNone(linked[(1, 0)])
         self.assertEqual(warnings, ['V1-0001_a.mov: 2 different renders cover the clip; left offline.'])
 
+    def test_red_clips_find_renders_named_after_the_clip(self):
+        # Resolve names a RED clip's renders without the segment number of its file.
+        self.assertEqual(fcp7.clip_name('A001_C047_1019HZ_001.R3D'), 'A001_C047_1019HZ')
+        self.assertIsNone(fcp7.clip_name('A001_C047_1019HZ_001.mov'))
+        xml = sequence([clipitem('x', 'A001_C047_1019HZ_001.R3D', 0, 1000, 10),
+                        clipitem('y', 'A001_C036_1019F7_001.R3D', 50, 2000, 10)])
+        linked, warnings = self.link(xml, {'V1-0001_A001_C047_1019HZ.mov': (1000, 70),      # its own number
+                                           'V1-0005_A001_C036_1019F7.mov': (2000, 70)})     # renumbered
+        self.assertEqual(linked, {(1, 0): 'V1-0001_A001_C047_1019HZ.mov', (1, 50): 'V1-0005_A001_C036_1019F7.mov'})
+        self.assertEqual(warnings, ['V1-0002_A001_C036_1019F7_001.R3D: matched render V1-0005_A001_C036_1019F7.mov by timecode.'])
+
     def test_render_short_after_a_trim_stays_the_clips_own(self):
         # x was trimmed past its handles after rendering; the V2 layer of the same
         # take covers it, but carries another grade.

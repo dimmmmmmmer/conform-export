@@ -236,6 +236,15 @@ def _on_renders(data):
             if item.file.attrs.get('id', '').startswith('conform-') and item.file.all('pathurl')]
 
 
+def clip_name(source):
+    """The name Resolve gives a RED clip's renders: the clip, without the
+    segment number of its first file (A001_C047_1019HZ_001.R3D -> A001_C047_1019HZ).
+    None for other sources, whose renders take the file's name."""
+    stem, ext = os.path.splitext(source)
+    name = re.sub(r'_\d{3}$', '', stem) if ext.lower() == '.r3d' else stem
+    return name if name != stem else None
+
+
 def _fold(name):
     """Comparable file name: macOS network shares list й, ё, í decomposed (NFD)."""
     return unicodedata.normalize('NFC', name).casefold()
@@ -278,8 +287,18 @@ class Renders:
         return [p for stem, paths in sorted(self.by_stem.items()) if stem.startswith(start) for p in paths]
 
     def containing(self, source):
-        suffixes = tuple('_' + _fold(s) for s in {os.path.splitext(source)[0], source})
+        names = {os.path.splitext(source)[0], source, clip_name(source)} - {None}
+        suffixes = tuple('_' + _fold(s) for s in names)
         return [p for stem, paths in self.by_stem.items() if stem.endswith(suffixes) for p in paths]
+
+    def own(self, named):
+        """Renders called like the clip's new name, or, for a RED clip, with the
+        clip's name in place of its file's (see clip_name())."""
+        found = self.named(named.new_name)
+        name = clip_name(named.clip.source)
+        if not found and name and named.clip.source in named.new_name:
+            found = self.named(named.new_name.replace(named.clip.source, name, 1))
+        return found
 
     def info(self, path):
         if path not in self._info:
@@ -482,7 +501,7 @@ def _pick(renders, named, item, timing, warnings, baked=False):
         warnings.append('%s: %s; left offline.' % (label, several))
         return None
 
-    exact = renders.named(named.new_name)
+    exact = renders.own(named)
     chosen = one(readable(exact), 'several renders with this name')
     if chosen:
         info = renders.info(chosen)
@@ -553,7 +572,7 @@ def conform(data, names, renders=None, bypass=(), warnings=None, sources=None):
     by_uid = {item.clip.uid: item for item in items}
     files, refs = _definitions(root)
     if renders:
-        renders.prefetch([p for named in names if named.clip.media for p in renders.named(named.new_name)])
+        renders.prefetch([p for named in names if named.clip.media for p in renders.own(named)])
     edits, rewritten = [], set()
     for n, named in enumerate(names, 1):
         item = by_uid.get(named.clip.uid)

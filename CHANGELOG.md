@@ -4,6 +4,7 @@ There are no separate releases: the download is the source code of `main`.
 
 ## Since 1.0.2
 
+- RED clips find their renders again. Resolve names a RED clip's renders after the clip, without the segment number of its file (`A001_C047_1019HZ_001.R3D` → `V1-0001_A001_C047_1019HZ.mov`).
 - **Timeline resolution** is kept:
   - The XML gets the timeline's real resolution. Resolve's own FCP7 export writes the project's resolution instead of a timeline's own (custom) one, for example 3840x1920 for a 3840x2160 timeline.
   - The DRT's timeline gets it too, with the timeline's mismatched-resolution and output scaling settings. Before, it took the project's.
