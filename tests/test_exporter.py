@@ -325,6 +325,86 @@ class ConformTests(unittest.TestCase):
         self.assertEqual(linked, {(1, 0): 'V1-0001_A001_C047_1019HZ.mov', (1, 50): 'V1-0005_A001_C036_1019F7.mov'})
         self.assertEqual(warnings, ['V1-0002_A001_C036_1019F7_001.R3D: matched render V1-0005_A001_C036_1019F7.mov by timecode.'])
 
+    def test_copy_of_the_source_in_the_render_folder_is_linked_when_there_is_no_render(self):
+        # A copy of the source put into the render folder: the clip moves there
+        # unchanged, effects included, since nothing is baked into it. Only the
+        # original's size tells a copy: a render named after the source has its
+        # name, and its length and timecode too when the clip uses all of it.
+        motion = ('<filter><effect><name>Basic Motion</name><parameter><parameterid>scale</parameterid><value>150</value>'
+                  '</parameter></effect></filter>')
+        still = ('<filter><start>-1</start><end>-1</end><effect><name>Time Remap</name>'
+                 '<parameter><parameterid>speed</parameterid><value>0</value></parameter></effect></filter>')
+        shot = clipitem('x', 'shot.mp4', 0, 1000, 10, motion).replace(
+            '</timecode></file>', '</timecode><media><video><duration>3000</duration></video>'
+                                  '<audio><channelcount>2</channelcount></audio></media></file>')
+        xml = sequence([shot, clipitem('y', 'cam.mxf', 50, 2000, 10), clipitem('a', 'away.mov', 100, 5000, 10)],
+                       [clipitem('g', 'graded.mov', 0, 6000, 10), clipitem('t', 'tcm.mxf', 50, 3000, 10),
+                        clipitem('w', 'two.mxf', 100, 4000, 10)],
+                       [clipitem('c', 'C0001.MP4', 0, 1000, 10), clipitem('b', 'B_C0001.MP4', 50, 1000, 10)],
+                       [clipitem('l', 'logo.png', 0, 0, 10, still)])
+        cam = self.out / 'cam'
+        cam.mkdir()
+        xml = xml.replace(b'file:///src/', cam.resolve().as_uri().encode() + b'/')
+        for name, size in {'shot.mp4': 3, 'cam.mxf': 3, 'graded.mov': 3, 'tcm.mxf': 3, 'two.mxf': 3,
+                           'C0001.MP4': 3, 'B_C0001.MP4': 4, 'logo.png': 3}.items():    # away.mov's is not here
+            (cam / name).write_bytes(b'x' * size)
+        renders = {'V1-0002_cam.mov': (70, 2000), 'V9-0001_tcm.mov': (100, 3000),         # other clips' renders,
+                   'V9-0002_two.mov': (100, 4000), 'V9-0003_two.mov': (100, 4005),        # by timecode
+                   'V4-0001_other.mov': (1, None), 'V7-0001_shot.mov': None}             # another still; unreadable
+        for name, size in {'shot.mp4': 3, 'cam.mxf': 3, 'away.mov': 3, 'graded.mov': 9, 'tcm.mxf': 3, 'two.mxf': 3,
+                           'C0001.MP4': 3, 'B_C0001.MP4': 4, 'logo.png': 3, **{r: 9 for r in renders}}.items():
+            (self.out / name).write_bytes(b'x' * size)
+
+        def read(path):
+            if renders[Path(path).name] is None:
+                raise media.MediaError('Corrupt QuickTime file')
+            frames, tc = renders[Path(path).name]
+            return media.MediaInfo(path, frames, Fraction(25), 1920, 1080, tc)
+        warnings = []
+        with patch('conform.fcp7.probe', side_effect=read) as probe:
+            result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), fcp7.Renders(self.out), ('transforms',), warnings)
+        self.assertEqual({Path(c.args[0]).name for c in probe.call_args_list}, set(renders))   # copies are not probed
+        got = rows(result)
+        x = got[(1, 0)]
+        self.assertEqual(x.value('name'), 'V1-0001_shot.mp4')
+        self.assertEqual(x.one('file').value('pathurl'), (self.out / 'shot.mp4').resolve().as_uri())
+        self.assertEqual(x.one('file').value('duration'), '3000')                             # Resolve's media facts,
+        self.assertEqual(x.one('file').path('media').all('audio'), [])                        # without audio
+        self.assertEqual((x.value('in'), x.value('out')), ('10', '60'))                       # same file, same frames
+        self.assertEqual([fcp7._effect(f) for f in x.all('filter')], ['Basic Motion'])        # not bypassed
+        self.assertEqual(got[(1, 50)].one('file').value('name'), 'V1-0002_cam.mov')           # renders come first,
+        self.assertEqual(got[(2, 50)].one('file').value('name'), 'V9-0001_tcm.mov')           # also by timecode
+        self.assertEqual(got[(3, 0)].one('file').value('name'), 'C0001.MP4')                  # not B_C0001.MP4
+        self.assertEqual(got[(4, 0)].one('file').value('name'), 'logo.png')
+        self.assertEqual(set(fcp7.source_copies(result)), {(1, 0), (3, 0), (3, 50), (4, 0)})
+        self.assertEqual(len(fcp7.linked_clips(result)), 6)
+        self.assertEqual(warnings, [
+            'V1-0001_shot.mp4: no render (unreadable: V7-0001_shot.mov); linked shot.mp4, a copy of its source file.',
+            "V1-0003_away.mov: no render; away.mov has its source's name, but the source is not here to check it "
+            'against; left offline.',
+            "V2-0001_graded.mov: no render; graded.mov has its source's name, but is not a copy of it; left offline.",
+            'V2-0002_tcm.mxf: matched render V9-0001_tcm.mov by timecode.',
+            'V2-0003_two.mxf: 2 different renders cover the clip; left offline.',
+            'V3-0001_C0001.MP4: no render; linked C0001.MP4, a copy of its source file.',
+            'V3-0002_B_C0001.MP4: no render; linked B_C0001.MP4, a copy of its source file.',
+            'V4-0001_logo.png: no render; linked logo.png, a copy of its source file.',
+            'V4-0001_logo.png: render V4-0001_other.mov has this clip number but is not this still.'])
+
+    def test_copy_in_several_folders_takes_the_newest(self):
+        xml = sequence([clipitem('x', 'shot.mp4', 0, 1000, 10)])
+        cam, old, new = self.out / 'cam', self.out / 'a', self.out / 'b'
+        for folder in (cam, old, new):
+            folder.mkdir()
+            (folder / 'shot.mp4').write_bytes(b'xxx')
+        os.utime(old / 'shot.mp4', (1_000_000, 1_000_000))
+        xml = xml.replace(b'file:///src/', cam.resolve().as_uri().encode() + b'/')
+        warnings = []
+        result = fcp7.conform(xml, plan(fcp7.clips(xml, []), 't'), fcp7.Renders([old, new]), (), warnings)
+        self.assertEqual(rows(result)[(1, 0)].one('file').value('pathurl'), (new / 'shot.mp4').resolve().as_uri())
+        shown = os.path.join('b', 'shot.mp4')
+        self.assertEqual(warnings, ['V1-0001_shot.mp4: copied into 2 folders; took the newest, %s.' % shown,
+                                    'V1-0001_shot.mp4: no render; linked %s, a copy of its source file.' % shown])
+
     def test_render_short_after_a_trim_stays_the_clips_own(self):
         # x was trimmed past its handles after rendering; the V2 layer of the same
         # take covers it, but carries another grade.
@@ -880,6 +960,42 @@ class APITests(unittest.TestCase):
                 self.assertTrue(any('several renders' in w for w in warnings))
                 # twin, broken and the logo, which has no render; without the bypass, ramps need Resolve's ranges
                 self.assertEqual(len(missing), 3 if bypass else 3 + RAMPS)
+
+    def test_bypass_leaves_a_clip_on_a_copy_of_its_source_alone(self):
+        # Nothing is baked into a copy of the source: its transforms, retime and
+        # composite mode stay, in the XML and the DRT, and the warnings count it.
+        source, copy, ramp = 'A001C013_260817_R14E_S001.mov', (1, 1259), (1, 1229)     # one source, two cuts
+        bypass = ('transforms', 'retime', 'composite')
+        with tempfile.TemporaryDirectory() as temp:
+            folder, out = Path(temp) / 'renders', Path(temp) / 'out'
+            folder.mkdir()
+            table = fake_renders(folder)
+            (folder / 'V1-0037_A001C013_260817_R14E_S001.mov').unlink()           # no render: the copy instead
+            (folder / source).write_bytes(b'')
+            twin = folder / 'V1-0035_A001C013_260817_R14E_S001.mxf'               # the other cut stays offline
+            twin.touch()
+            table[str(twin)] = table[str(folder / 'V1-0035_A001C013_260817_R14E_S001.mov')]
+            resolve = FakeResolve(props={copy: {'RetimeProcess': 3, 'MotionEstimation': 6, 'CompositeMode': 11}})
+            with patch('conform.fcp7.probe', side_effect=lambda p: table[p]), \
+                    patch('conform.fcp7._same_size', side_effect=lambda p, original: Path(p).name == source or None):
+                files, _, warnings = export_current(resolve, out, renders=str(folder), bypass=bypass)
+            xml = next(p for p in files if p.suffix == '.xml').read_bytes()
+        self.assertEqual(set(fcp7.source_copies(xml)), {copy})
+        got = rows(xml)
+        self.assertNotIn(ramp, {(i.clip.track, i.clip.start) for i in fcp7.read(xml, [])[1]
+                                if i.clip.uid in fcp7.linked_clips(xml)})
+        self.assertEqual({fcp7._effect(f) for f in got[copy].all('filter')} & {'Basic Motion', 'Time Remap'},
+                         {'Basic Motion', 'Time Remap'})
+        moving = [k for k, ci in got.items() if any(fcp7._effect(f) == 'Basic Motion' for f in ci.all('filter'))]
+        self.assertIn(copy, moving)
+        self.assertIn('%d clips are flipped in the Inspector; FCP7 XML and DRT cannot carry flips.' % len(moving), warnings)
+        self.assertIn('1 retimed clips use Optical Flow; FCP7 XML cannot say so (the DRT keeps it).', warnings)
+        self.assertIn('DRT: clips without a render may link to %s, the copy of their source other clips use.' % source,
+                      warnings)
+        imported = resolve.project.pool.imported
+        self.assertEqual([imported.item(copy).props[k] for k in ('RetimeProcess', 'MotionEstimation', 'CompositeMode')],
+                         [3, 6, 11])
+        self.assertEqual(imported.item((1, 1247)).props['RetimeProcess'], 0)     # a render: the bypass holds
 
     def export(self, resolve, bypass=()):
         with tempfile.TemporaryDirectory() as temp:

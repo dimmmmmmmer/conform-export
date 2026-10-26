@@ -2,6 +2,7 @@
 from pathlib import Path
 import csv
 import gc
+import os
 import shutil
 import tempfile
 import time
@@ -162,21 +163,25 @@ def free_stem(root, timeline_name):
 
 def build_bundle(xml_path, output_root, timeline_name, settings=Settings(), export_drt=False,
                  export_xml=True, export_csv=True, renders=None, bypass=(), sources=None,
-                 make_drt=None, warnings=None, size=None, import_size=None):
+                 make_drt=None, warnings=None, size=None, import_size=None, checks=None):
     """Conform `xml_path` (Resolve's FCP7 export) and write the chosen files.
     `make_drt(xml_file, drt_file, render_paths)` builds the DRT inside Resolve;
     `size` is the timeline's real resolution, `import_size` the project's: the
     XML Resolve imports for the DRT carries that one, because importing an XML
     of another size changes the project's resolution (drt_maker then gives the
-    temporary timeline the real one)."""
+    temporary timeline the real one). `checks(conformed)` gives warnings about
+    the conformed XML, listed first."""
     if not any((export_drt, export_xml, export_csv)):
         raise ValueError('Select at least one export format')
     warnings = warnings if warnings is not None else []
+    first = len(warnings)
     data = corrected_size(Path(xml_path).read_bytes(), size, warnings)
     root, items = fcp7.read(data, warnings)
     names = plan([i.clip for i in items], timeline_name, settings) if items else []
     render_folder = fcp7.Renders(renders) if renders else None
     conformed = fcp7.conform(data, names, render_folder, bypass, warnings, sources)
+    if checks:
+        warnings[first:first] = checks(conformed)
     output_root = Path(output_root).expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     stem = free_stem(output_root, timeline_name)
@@ -231,6 +236,14 @@ def drt_sound(original, conformed, warnings):
     if len(kept) < len(sounds):
         warnings.append('DRT: the sound of clips without a render stays offline (%d camera files), or their picture '
                         'would link back to the camera originals.' % (len(sounds) - len(kept)))
+    # A copy of a source goes into the bin for the clips linked to it; the
+    # same source's clips left without a render may take it as well.
+    names = {fcp7._fold(os.path.basename(p)) for p in held}
+    caught = sorted({os.path.basename(p) for p in fcp7.source_copies(conformed).values()
+                     if fcp7._fold(os.path.basename(p)) in names})
+    if caught:
+        warnings.append('DRT: clips without a render may link to %s, the copy of their source other clips use.'
+                        % ', '.join(caught))
     return kept
 
 
@@ -271,8 +284,9 @@ def video_items(timeline):
 
 
 def flips(timeline, items):
-    """Flipped clips whose transforms still travel in the XML. FCP7 XML (and so
-    the DRT) cannot carry flips; for rendered clips Resolve bakes them in."""
+    """Flipped clips whose transforms still travel in the XML (`items`, read from
+    the conformed XML). FCP7 XML (and so the DRT) cannot carry flips; for
+    rendered clips Resolve bakes them in."""
     moving = {(i.clip.track, i.clip.start) for i in items
               if any(fcp7._effect(f) == 'Basic Motion' for f in i.node.all('filter'))}
     count = 0
@@ -324,7 +338,8 @@ def drt_maker(resolve, project, timeline, found=None, bypass=(), warnings=None):
                 raise RuntimeError('Resolve could not import the conformed XML for the DRT')
             if found is not None and RESTORE_DRT:
                 try:
-                    kept = restore(resolve, project, imported, found, fcp7.retimed(data), bypass, warnings)
+                    kept = restore(resolve, project, imported, found, fcp7.retimed(data), bypass, warnings,
+                                   fcp7.source_copies(data))
                 except Exception as exc:  # the DRT is still worth having
                     warnings.append('DRT: timeline settings and clip properties were not fully restored (%s).' % exc)
             if not kept:
@@ -383,22 +398,23 @@ class _Switched(Exception):
     pass
 
 
-def restore(resolve, project, imported, found, retimed, bypass, warnings):
+def restore(resolve, project, imported, found, retimed, bypass, warnings, copies=()):
     """Copy onto the imported timeline what the XML lost (see drt_maker). Every
     single write is made while it is the current timeline; if the user switches
-    away, restoring stops. True when every retimed clip got its retime process."""
+    away, restoring stops. True when every retimed clip got its retime process.
+    `copies`: clips on a copy of their source, which nothing is bypassed for."""
     if not _switch(project, imported):
         warnings.append('DRT: the temporary timeline could not be made current, so its settings were not restored.')
         return False
     try:
-        return _restore(resolve, project, imported, found, retimed, bypass, warnings)
+        return _restore(resolve, project, imported, found, retimed, bypass, warnings, copies)
     except _Switched:
         warnings.append('DRT: you switched timelines while the DRT was being built, so the rest of its settings '
                         'were not restored; export again to get them.')
         return False
 
 
-def _restore(resolve, project, imported, found, retimed, bypass, warnings):
+def _restore(resolve, project, imported, found, retimed, bypass, warnings, copies=()):
     def write(call, *args):
         if not _is_current(project, imported):
             raise _Switched()
@@ -436,7 +452,8 @@ def _restore(resolve, project, imported, found, retimed, bypass, warnings):
     unknown = {k: set() for k in RETIME}
     for key, item in video_items(imported).items():
         props = dict(found['clips'].get(key, {}))
-        if 'retime' in bypass:
+        baked = key not in copies       # a render; nothing is baked into a copy of the source
+        if 'retime' in bypass and baked:
             props = {k: v for k, v in props.items() if k not in RETIME}
         elif key in retimed:
             for k in RETIME:
@@ -445,7 +462,7 @@ def _restore(resolve, project, imported, found, retimed, bypass, warnings):
                         props[k] = on_project[k]
                     elif k == 'RetimeProcess' or props.get('RetimeProcess') == flow:
                         unknown[k].add(key)     # motion estimation matters only to Optical Flow
-        if 'composite' in bypass:
+        if 'composite' in bypass and baked:
             props.pop('CompositeMode', None)
         for k, value in props.items():
             if item.GetProperty(k) != value and (not write(item.SetProperty, k, value) or item.GetProperty(k) != value):
@@ -482,19 +499,26 @@ def export_current(resolve, output_root, settings=Settings(), export_drt=True, e
         if signature(timeline) != before or active(resolve)[1].GetUniqueId() != timeline.GetUniqueId():
             raise RuntimeError('Timeline changed during export. Retry while editing is paused.')
         warnings = []
-        flipped = flips(timeline, items) if 'transforms' not in bypass else 0
-        if flipped:
-            warnings.append('%d clips are flipped in the Inspector; FCP7 XML and DRT cannot carry flips.' % flipped)
-        if export_xml and 'retime' not in bypass:
-            flow = optical_flow(resolve, found, fcp7.retimed(xml_path.read_bytes()))
+        retimed = fcp7.retimed(xml_path.read_bytes())
+
+        def checks(conformed):
+            # What the conformed XML still carries: bypass leaves the transforms
+            # and retime of clips on a copy of their source.
+            notes = []
+            flipped = flips(timeline, fcp7.read(conformed, [])[1])
+            if flipped:
+                notes.append('%d clips are flipped in the Inspector; FCP7 XML and DRT cannot carry flips.' % flipped)
+            flow = optical_flow(resolve, found, retimed if 'retime' not in bypass
+                                else retimed & set(fcp7.source_copies(conformed))) if export_xml else 0
             if flow:
                 # drt_maker takes the promise back if it could not keep it
-                warnings.append('%d retimed clips use Optical Flow; FCP7 XML cannot say so%s.'
-                                % (flow, KEPT if export_drt and RESTORE_DRT else ''))
+                notes.append('%d retimed clips use Optical Flow; FCP7 XML cannot say so%s.'
+                             % (flow, KEPT if export_drt and RESTORE_DRT else ''))
+            return notes
         return build_bundle(xml_path, output_root, timeline.GetName(), settings, export_drt, export_xml,
                             export_csv, renders, bypass, sources,
                             drt_maker(resolve, project, timeline, found, bypass, warnings) if export_drt else None,
-                            warnings, timeline_size(timeline), project_size(found))
+                            warnings, timeline_size(timeline), project_size(found), checks)
 
 
 def optical_flow(resolve, found, retimed):

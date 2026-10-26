@@ -26,6 +26,16 @@ NOT_RENDERS = ('.xml', '.drt', '.csv', '.txt', '.json', '.edl', '.aaf', '.otio',
                '.wav', '.aif', '.aiff', '.mp3', '.m4a')
 
 
+COPY = '-copy'      # file id suffix of a clip linked to a copy of its source
+
+
+@dataclass(frozen=True)
+class SourceFile:
+    """No render, but a copy of the clip's source file in the render folder: the
+    clip keeps Resolve's media facts, effects and timing and only moves there."""
+    path: str
+
+
 @dataclass
 class Item:
     node: object        # <clipitem>
@@ -236,6 +246,13 @@ def _on_renders(data):
             if item.file.attrs.get('id', '').startswith('conform-') and item.file.all('pathurl')]
 
 
+def source_copies(data):
+    """Clips (track, start) the conformed XML points at a copy of their source
+    instead of a render, and those files. Nothing is baked into them."""
+    return {(item.clip.track, item.clip.start): _path(item.file.value('pathurl')) for item in _on_renders(data)
+            if item.file.attrs['id'].endswith(COPY)}
+
+
 def clip_name(source):
     """The name Resolve gives a RED clip's renders: the clip, without the
     segment number of its first file (A001_C047_1019HZ_001.R3D -> A001_C047_1019HZ).
@@ -290,6 +307,12 @@ class Renders:
         names = {os.path.splitext(source)[0], source, clip_name(source)} - {None}
         suffixes = tuple('_' + _fold(s) for s in names)
         return [p for stem, paths in self.by_stem.items() if stem.endswith(suffixes) for p in paths]
+
+    def copies(self, source):
+        """Files with the clip's source's own name, extension included: a copy of
+        the source put there instead of a render, or another file of that name."""
+        return [p for p in self.by_stem.get(_fold(os.path.splitext(source)[0]), [])
+                if _fold(os.path.basename(p)) == _fold(source)]
 
     def own(self, named):
         """Renders called like the clip's new name, or, for a RED clip, with the
@@ -426,6 +449,25 @@ def _render_file(fid, info, name):
     return ''.join(parts).encode('utf-8')
 
 
+def _same_size(path, original):
+    """`path` (named like `original`) is that file or a copy of it; None when the
+    original is not here to compare."""
+    try:
+        return os.path.samefile(path, original) or os.path.getsize(path) == os.path.getsize(original)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _source_file(data, definition, fid, path):
+    """The source's own definition (Resolve's media facts) at `path`, without audio."""
+    chunk = data[definition.start:definition.end]
+    node = parse(chunk)
+    edits = [text_edit(n, Path(path).resolve().as_uri()) for n in node.all('pathurl')]
+    edits += [remove(n) for n in (node.path('media').all('audio') if node.all('media') else [])]
+    chunk = apply(chunk, edits)
+    return ('<file id=%s' % quoteattr(fid)).encode() + chunk[chunk.index(b'>'):]
+
+
 def _offline_file(data, definition, fid, name):
     """The source's media facts under the new name, without a path and without audio."""
     chunk = data[definition.start:definition.end]
@@ -459,9 +501,10 @@ def _letters(name):
     return re.sub(r'\d+', '', unicodedata.normalize('NFC', name)).strip(' ._-').casefold()
 
 
-def _pick(renders, named, item, timing, warnings, baked=False):
+def _pick(renders, named, item, timing, warnings, baked=False, source_names=frozenset()):
     """`baked`: the render has the clip's speed in it, so its timecode says
-    nothing about which source frames it holds."""
+    nothing about which source frames it holds. `source_names`: the timeline's
+    source file names, folded."""
     label = named.new_name
     first, last = timing.source_range()
 
@@ -489,17 +532,42 @@ def _pick(renders, named, item, timing, warnings, baked=False):
         found = len({_fold(Path(p).stem) for p in matches})
         return (one(matches, 'several renders cover the clip') if found == 1 else None), found
 
-    def one(paths, several):
+    def one(paths, several, made='rendered'):
         """The single render among `paths`. The same render made into several
         folders (a fix re-rendered next to the first renders) is the newest file."""
         if len(paths) < 2:
             return paths[0] if paths else None
         if len({os.path.dirname(p) for p in paths}) == len(paths):
             newest = max(paths, key=lambda p: os.stat(p).st_mtime)
-            warnings.append('%s: rendered into %d folders; took the newest, %s.' % (label, len(paths), shown(newest)))
+            warnings.append('%s: %s into %d folders; took the newest, %s.' % (label, made, len(paths), shown(newest)))
             return newest
         warnings.append('%s: %s; left offline.' % (label, several))
         return None
+
+    def containing():
+        # Not a file named like another clip's source: a copy of that source
+        # (B_C0001.MP4 for C0001.MP4), not a render of this one.
+        return [p for p in renders.containing(item.clip.source) if _fold(Path(p).name) not in source_names]
+
+    def copy_of_source(note=''):
+        """A copy of the source put there instead of a render: its name and the
+        original's size. A render named after the source has the name too, and,
+        when the clip uses all of the source, its length and timecode as well.
+        False when no file has the source's name."""
+        urls = item.file.all('pathurl')
+        original = _path(urls[0].text) if urls else None
+        named_so = renders.copies(item.clip.source)
+        same = {p: _same_size(p, original) for p in named_so}
+        chosen = one([p for p in named_so if same[p]], 'several copies of its source file', 'copied')
+        if chosen:
+            warnings.append('%s: no render%s; linked %s, a copy of its source file.' % (label, note, shown(chosen)))
+            return SourceFile(chosen)
+        if named_so and not any(same.values()):
+            warnings.append("%s: no render%s; %s has its source's name, but %s; left offline."
+                            % (label, note, ', '.join(shown(p) for p in named_so),
+                               'is not a copy of it' if False in same.values()
+                               else 'the source is not here to check it against'))
+        return None if named_so else False
 
     exact = renders.own(named)
     chosen = one(readable(exact), 'several renders with this name')
@@ -514,7 +582,7 @@ def _pick(renders, named, item, timing, warnings, baked=False):
             elsewhere = (info.tc_start + info.frames - 1 < timing.start + first
                          or timing.start + last < info.tc_start)
             trusted = not baked and not (timing.ramp and not timing.api)
-            other = by_timecode([p for p in renders.containing(item.clip.source) if p not in exact])[0] \
+            other = by_timecode([p for p in containing() if p not in exact])[0] \
                 if elsewhere and trusted else None
             if other:
                 warnings.append("%s: render %s holds none of the clip's frames; matched render %s by timecode."
@@ -539,23 +607,26 @@ def _pick(renders, named, item, timing, warnings, baked=False):
             return renders.info(chosen)
         if stills:
             return None
-        if others:
-            warnings.append('%s: render %s has this clip number but is not this still; left offline.'
-                            % (label, ', '.join(Path(p).name for p in others)))
         if numbered:
-            return None
-    candidates = renders.containing(item.clip.source)
+            linked = copy_of_source() or None
+            if others:
+                warnings.append('%s: render %s has this clip number but is not this still%s.'
+                                % (label, ', '.join(Path(p).name for p in others), '' if linked else '; left offline'))
+            return linked
+    candidates = containing()
     other, found = by_timecode(candidates)
     if other:
         warnings.append('%s: matched render %s by timecode.' % (label, Path(other).name))
         return renders.info(other)
     if found > 1:
         warnings.append('%s: %d different renders cover the clip; left offline.' % (label, found))
-    elif not found:
-        unreadable = [shown(p) for p in candidates if isinstance(renders.info(p), Exception)]
-        warnings.append('%s: no render found%s; left offline.'
-                        % (label, ' (unreadable: %s)' % ', '.join(unreadable) if unreadable else ''))
-    return None
+        return None
+    unreadable = [shown(p) for p in candidates if isinstance(renders.info(p), Exception)]
+    note = ' (unreadable: %s)' % ', '.join(unreadable) if unreadable else ''
+    linked = copy_of_source(note)
+    if linked is False:
+        warnings.append('%s: no render found%s; left offline.' % (label, note))
+    return linked or None
 
 
 def conform(data, names, renders=None, bypass=(), warnings=None, sources=None):
@@ -573,6 +644,7 @@ def conform(data, names, renders=None, bypass=(), warnings=None, sources=None):
     files, refs = _definitions(root)
     if renders:
         renders.prefetch([p for named in names if named.clip.media for p in renders.own(named)])
+    source_names = frozenset(_fold(item.clip.source) for item in items if item.clip.media)
     edits, rewritten = [], set()
     for n, named in enumerate(names, 1):
         item = by_uid.get(named.clip.uid)
@@ -582,7 +654,7 @@ def conform(data, names, renders=None, bypass=(), warnings=None, sources=None):
             continue
         try:
             timing = Timing(item, sequence_base, (sources or {}).get(named.clip.uid))
-            edits += _conform_item(data, item, named, n, timing, renders, bypass, warnings)
+            edits += _conform_item(data, item, named, n, timing, renders, bypass, warnings, source_names)
         except (ValueError, KeyError) as exc:
             try:
                 # Still rename it and cut the link to the original.
@@ -607,14 +679,19 @@ def conform(data, names, renders=None, bypass=(), warnings=None, sources=None):
     return apply(data, edits)
 
 
-def _conform_item(data, item, named, n, timing, renders, bypass, warnings):
+def _conform_item(data, item, named, n, timing, renders, bypass, warnings, source_names=frozenset()):
     node, label, t = item.node, named.new_name, timing
     old_in, old_out = t.first_in, t.first_out
     length = old_out - old_in
     edits = [text_edit(node.one('name'), named.new_name)]
     fid = 'conform-%04d' % n
     drop_retime = t.filter is not None and 'retime' in bypass and not t.freeze
-    info = _pick(renders, named, item, t, warnings, drop_retime) if renders else None
+    info = _pick(renders, named, item, t, warnings, drop_retime, source_names) if renders else None
+    if isinstance(info, SourceFile):
+        # The source file itself: nothing changes but where it is; nothing is
+        # baked into it either, so no bypass applies.
+        ref = node.one('file')
+        return edits + [(ref.start, ref.end, _source_file(data, item.file, fid + COPY, info.path))]
     if info is not None and round(info.rate) != t.file_base:
         warnings.append('%s: render frame rate %s differs from the source; left offline.' % (label, info.rate))
         info = None

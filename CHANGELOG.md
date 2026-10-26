@@ -4,6 +4,11 @@ There are no separate releases: the download is the source code of `main`.
 
 ## Since 1.0.2
 
+- A clip without a render links to a copy of its source file put into the render folder, for example a screen recording placed there instead of a render. The export says so.
+  - A file counts as a copy only when it has the source's name and the same size as the original. A render named after the source has its name too, and its length and timecode as well when the clip uses all of the source. So a file of that name is left alone, with a warning, when its size differs or the original is not on this computer.
+  - Nothing is baked into a copy, so the clip keeps its in and out points and its effects, and **Bypass** leaves it alone. Its retime process (Optical Flow…) and composite mode go into the DRT, and its flips count in the flip warning.
+  - When another clip of the same source is left without a render, the export warns that Resolve may link it to the copy in the DRT.
+- A file named like another clip's source (`B_C0001.MP4` next to `C0001.MP4`) is no longer taken for a render of this clip by timecode.
 - RED clips find their renders again. Resolve names a RED clip's renders after the clip, without the segment number of its file (`A001_C047_1019HZ_001.R3D` → `V1-0001_A001_C047_1019HZ.mov`).
 - **Timeline resolution** is kept:
   - The XML gets the timeline's real resolution. Resolve's own FCP7 export writes the project's resolution instead of a timeline's own (custom) one, for example 3840x1920 for a 3840x2160 timeline.
